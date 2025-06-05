@@ -5,4 +5,5 @@ Flask
 python-dotenv
 gunicorn
 shortuuid
+# werkzeug is usually a Flask dependency, but pinning can be useful
 werkzeug
