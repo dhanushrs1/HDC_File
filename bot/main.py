@@ -9,8 +9,15 @@ import asyncio
 
 # Import configuration from the root directory
 import sys
-sys.path.append('..') # Adds the parent directory to the Python path
-import config
+import os
+
+# Get the absolute path of the project's root directory
+# This assumes bot/main.py is in a subdirectory of the project root
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root) # Insert at the beginning to ensure it's checked first
+
+import config # Now this should reliably find config.py in the project_root
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -30,13 +37,18 @@ db = mongo_client[config.MONGO_DB_NAME]
 files_collection = db["files"]
 
 # Ensure indexes for MongoDB
-if "files" not in db.list_collection_names() or not files_collection.index_information():
-    logger.info("Creating MongoDB indexes for 'files' collection...")
-    files_collection.create_index("file_id", unique=True)
-    files_collection.create_index("upload_timestamp")
-    files_collection.create_index("view_count")
-    files_collection.create_index("uploaded_by_user_id")
-    logger.info("MongoDB indexes created.")
+# Check if collection exists and has indexes to avoid re-creating them every time
+# This is a more robust check
+try:
+    if "files" not in db.list_collection_names() or not files_collection.index_information():
+        logger.info("Creating MongoDB indexes for 'files' collection...")
+        files_collection.create_index("file_id", unique=True)
+        files_collection.create_index("upload_timestamp")
+        files_collection.create_index("view_count")
+        files_collection.create_index("uploaded_by_user_id")
+        logger.info("MongoDB indexes created.")
+except Exception as e:
+    logger.error(f"Error checking or creating MongoDB indexes for 'files': {e}")
 
 
 def generate_file_id():
@@ -59,13 +71,11 @@ async def get_file_details(message: Message):
         original_file_name = file_ob.file_name or f"video_{message.id}.mp4"
     elif message.photo:
         file_type = "photo"
-        # For photos, message.photo is a Photo object which contains a list of PhotoSize
-        # We'll pick the largest one for file_id and size reference
         if message.photo.sizes:
             file_ob = message.photo.sizes[-1] # Largest PhotoSize
-        else: # Fallback if sizes list is empty for some reason (unlikely)
-            file_ob = message.photo
-        original_file_name = f"photo_{message.id}.jpg" # Photos don't have file_name attribute directly
+        else:
+            file_ob = message.photo # Fallback
+        original_file_name = f"photo_{message.id}.jpg"
     elif message.audio:
         file_type = "audio"
         file_ob = message.audio
@@ -77,11 +87,11 @@ async def get_file_details(message: Message):
 
     if file_ob:
         return {
-            "tg_file_id": file_ob.file_id, # This is the file_id of the specific PhotoSize for photos
+            "tg_file_id": file_ob.file_id,
             "file_type": file_type,
             "original_file_name": original_file_name,
-            "mime_type": getattr(file_ob, 'mime_type', None), # PhotoSize doesn't have mime_type directly
-            "file_size": getattr(file_ob, 'file_size', None), # Same for file_size
+            "mime_type": getattr(file_ob, 'mime_type', None),
+            "file_size": getattr(file_ob, 'file_size', None),
         }
     return None
 
@@ -99,17 +109,12 @@ async def file_handler(client: Client, message: Message):
     user_id = message.from_user.id
     user_firstname = message.from_user.first_name
 
-    file_details_extracted = await get_file_details(message) # Renamed to avoid conflict
+    file_details_extracted = await get_file_details(message)
     if not file_details_extracted:
         await message.reply_text("Sorry, I couldn't process this file type.")
         return
 
     try:
-        # For photos, forward the original message, not just a PhotoSize.
-        # The message object itself (message.photo) represents the photo with all its sizes.
-        # When forwarding, Telegram handles sending the best representation or the full media.
-        # The file_id used for metadata can be from the largest PhotoSize for reference.
-        
         await message.reply_text("Processing your file...", quote=True)
         
         forwarded_messages = await client.forward_messages(
@@ -132,7 +137,7 @@ async def file_handler(client: Client, message: Message):
 
         file_metadata = {
             "file_id": unique_file_id,
-            "tg_file_id_ref": file_details_extracted["tg_file_id"], # Reference TG file_id (e.g., of largest photo size)
+            "tg_file_id_ref": file_details_extracted["tg_file_id"],
             "original_file_name": file_details_extracted["original_file_name"],
             "file_type": file_details_extracted["file_type"],
             "mime_type": file_details_extracted["mime_type"],
@@ -158,7 +163,7 @@ async def file_handler(client: Client, message: Message):
             quote=True
         )
 
-        admin_message_text = ( # Renamed variable
+        admin_message_text = (
             f"🆕 New File Uploaded!\n\n"
             f"👤 By: {user_firstname} (ID: {user_id})\n"
             f"📄 File: {file_details_extracted['original_file_name']}\n"
@@ -189,31 +194,31 @@ async def run_bot():
         logger.error(f"MongoDB connection failed: {e}. Please ensure MongoDB is running and accessible.")
         logger.error(f"Mongo URI was: {config.MONGO_URI}")
         logger.error("Bot will not start without a database connection.")
-        return
+        return # Exit if DB connection fails
 
     # Pyrogram client startup and shutdown logic
     try:
         await app.start()
-        logger.info("Bot started successfully! Press Ctrl+C to stop.")
+        user_me = await app.get_me()
+        logger.info(f"Bot started successfully as @{user_me.username} (ID: {user_me.id})! Press Ctrl+C to stop.")
         await asyncio.Event().wait()  # Keep the bot running
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Shutdown signal received...")
+    except Exception as e:
+        logger.error(f"An error occurred during bot startup or main loop: {e}", exc_info=True)
     finally:
         logger.info("Stopping Pyrogram client...")
-        if app.is_initialized and not app.is_stopped: # Check if client was started and not yet stopped
+        if app.is_initialized and not app.is_stopped:
             await app.stop()
             logger.info("Pyrogram client stopped.")
         else:
             logger.info("Pyrogram client was not running or already stopped.")
-        # mongo_client.close() # Generally not needed as Pymongo handles pool connections,
-                             # but can be added if explicit close is desired on script exit.
         logger.info("Bot shutdown complete.")
 
 if __name__ == "__main__":
     try:
         asyncio.run(run_bot())
     except KeyboardInterrupt:
-        # This catches Ctrl+C if it happens very early, before asyncio.run() fully sets up its own signal handling
         logger.info("Bot process terminated by user (KeyboardInterrupt at top level).")
     except Exception as e:
         logger.critical(f"An unrecoverable error occurred at the top level: {e}", exc_info=True)
