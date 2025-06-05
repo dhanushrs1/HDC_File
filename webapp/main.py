@@ -2,23 +2,28 @@ import datetime
 from functools import wraps
 from flask import Flask, request, redirect, render_template_string, session, url_for, abort, make_response, current_app
 from pymongo import MongoClient, DESCENDING, ASCENDING
+import logging # Make sure logging is imported
 
 # Import configuration from the root directory
 import sys
 import os
 
-# Get the absolute path of the project's root directory
-# This assumes webapp/main.py is in a subdirectory of the project root
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
-    sys.path.insert(0, project_root) # Insert at the beginning
+    sys.path.insert(0, project_root)
 
-import config # Now this should reliably find config.py
+import config
 
 app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
 
-# Initialize MongoDB Client and collections within application context or globally
+# Configure Flask logging to be more verbose, especially for Gunicorn
+if __name__ != '__main__': # When run by Gunicorn, __name__ is not '__main__'
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
+
+# Initialize MongoDB Client and collections
 mongo_client = None
 db = None
 files_collection = None
@@ -26,49 +31,47 @@ access_logs_collection = None
 
 def init_db():
     global mongo_client, db, files_collection, access_logs_collection
-    if mongo_client is None: # Initialize only once
-        app.logger.info(f"Initializing MongoDB connection to: {config.MONGO_URI}")
-        try:
-            mongo_client = MongoClient(config.MONGO_URI, serverSelectionTimeoutMS=5000) # Add timeout
-            mongo_client.admin.command('ping') # Verify connection
-            app.logger.info("MongoDB connection successful.")
-            db = mongo_client[config.MONGO_DB_NAME]
-            files_collection = db["files"]
-            access_logs_collection = db["access_logs"]
+    if mongo_client is not None: # Already initialized
+        return
+    
+    app.logger.info(f"Initializing MongoDB connection to URI ending with: ...{config.MONGO_URI[-30:] if config.MONGO_URI else 'N/A'}")
+    try:
+        mongo_client = MongoClient(config.MONGO_URI, serverSelectionTimeoutMS=5000)
+        mongo_client.admin.command('ping')
+        app.logger.info("MongoDB connection successful.")
+        db = mongo_client[config.MONGO_DB_NAME]
+        files_collection = db["files"]
+        access_logs_collection = db["access_logs"]
 
-            # Ensure indexes for MongoDB
-            if "files" not in db.list_collection_names() or not files_collection.index_information():
-                app.logger.info("Creating MongoDB indexes for 'files' collection...")
-                files_collection.create_index("file_id", unique=True)
-                files_collection.create_index("upload_timestamp")
-                files_collection.create_index("view_count")
-                files_collection.create_index("uploaded_by_user_id")
-            
-            if "access_logs" not in db.list_collection_names() or not access_logs_collection.index_information():
-                app.logger.info("Creating MongoDB indexes for 'access_logs' collection...")
-                access_logs_collection.create_index("file_id")
-                access_logs_collection.create_index([("access_timestamp", DESCENDING)])
-            app.logger.info("MongoDB indexes checked/created.")
-        except Exception as e:
-            app.logger.error(f"MongoDB connection/setup failed: {e}")
-            # Decide how to handle this - app might not be usable.
-            # For now, it will raise errors when DB is accessed.
-            # Consider raising a specific exception or exiting if critical.
-            mongo_client = None # Reset to allow retry or indicate failure
+        if "files" not in db.list_collection_names() or not files_collection.index_information():
+            app.logger.info("Creating MongoDB indexes for 'files' collection...")
+            files_collection.create_index("file_id", unique=True)
+            files_collection.create_index("upload_timestamp")
+            files_collection.create_index("view_count")
+            files_collection.create_index("uploaded_by_user_id")
+        
+        if "access_logs" not in db.list_collection_names() or not access_logs_collection.index_information():
+            app.logger.info("Creating MongoDB indexes for 'access_logs' collection...")
+            access_logs_collection.create_index("file_id")
+            access_logs_collection.create_index([("access_timestamp", DESCENDING)])
+        app.logger.info("MongoDB indexes checked/created for Flask app.")
+    except Exception as e:
+        app.logger.error(f"Flask app MongoDB connection/setup failed: {e}", exc_info=True)
+        app.logger.error(f"Mongo URI used: {config.MONGO_URI}")
+        mongo_client = None # Reset to indicate failure
 
-# Call init_db() when the app starts.
-# For Gunicorn, this will be called once per worker process.
-# For Flask dev server, once.
+# Initialize DB when the app/module is loaded
 init_db()
 
-
+# --- Authentication, Routes, Templates etc. remain the same as your previous correct version ---
+# (Make sure to copy the LOGIN_TEMPLATE and ADMIN_DASHBOARD_TEMPLATE strings here)
 # --- Authentication for Admin ---
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not mongo_client: # Check if DB is initialized
+        if not mongo_client: 
             app.logger.error("Database not initialized. Cannot proceed with login.")
-            abort(503, "Database service unavailable.") # Service Unavailable
+            abort(503, "Database service unavailable.")
         if 'logged_in' not in session:
             return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
@@ -105,13 +108,17 @@ def access_file(file_id_str):
     file_record = files_collection.find_one({"file_id": file_id_str})
 
     if not file_record:
+        app.logger.warning(f"File not found in DB for file_id: {file_id_str}")
         abort(404, description="File not found.")
 
     try:
+        ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+        user_agent = request.headers.get('User-Agent')
+        app.logger.info(f"Access attempt for file_id: {file_id_str} from IP: {ip_address}")
         access_log_entry = {
             "file_id": file_id_str,
-            "ip_address": request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip(),
-            "user_agent": request.headers.get('User-Agent'),
+            "ip_address": ip_address,
+            "user_agent": user_agent,
             "access_timestamp": datetime.datetime.utcnow()
         }
         access_logs_collection.insert_one(access_log_entry)
@@ -120,12 +127,13 @@ def access_file(file_id_str):
             {"$inc": {"view_count": 1}}
         )
     except Exception as e:
-        app.logger.error(f"Error logging access or incrementing view count for {file_id_str}: {e}")
+        app.logger.error(f"Error logging access or incrementing view count for {file_id_str}: {e}", exc_info=True)
 
     storage_channel_id_for_link = config.get_telegram_link_channel_id(file_record['storage_channel_id'])
     message_id = file_record['message_id_in_storage']
     
     telegram_link = f"https://t.me/c/{storage_channel_id_for_link}/{message_id}"
+    app.logger.info(f"Redirecting to Telegram link: {telegram_link} for file_id: {file_id_str}")
     return redirect(telegram_link, code=302)
 
 # --- Admin Dashboard Route ---
@@ -135,38 +143,44 @@ def admin_dashboard():
     if not mongo_client or not files_collection or not access_logs_collection:
         app.logger.error("Database not initialized. Cannot display admin dashboard.")
         abort(503, "Database service unavailable.")
+    app.logger.info(f"Admin dashboard accessed by session: {session.get('_id', 'N/A')}")
+    try:
+        total_files = files_collection.count_documents({})
+        
+        top_downloaded_files = list(files_collection.find({"view_count": {"$gt": 0}})
+                                    .sort("view_count", DESCENDING)
+                                    .limit(10))
+        
+        pipeline = [
+            {"$group": {
+                "_id": "$uploaded_by_user_id",
+                "count": {"$sum": 1},
+                "user_firstname": {"$first": "$uploaded_by_user_firstname"}
+            }},
+            {"$sort": {"count": DESCENDING}},
+            {"$limit": 10}
+        ]
+        files_by_user_agg = list(files_collection.aggregate(pipeline))
+        
+        files_by_user = [
+            {"user_id": item["_id"], 
+             "user_firstname": item.get("user_firstname", "N/A"), 
+             "count": item["count"]}
+            for item in files_by_user_agg
+        ]
 
-    total_files = files_collection.count_documents({})
-    
-    top_downloaded_files = list(files_collection.find({"view_count": {"$gt": 0}})
-                                .sort("view_count", DESCENDING)
-                                .limit(10))
-    
-    pipeline = [
-        {"$group": {
-            "_id": "$uploaded_by_user_id",
-            "count": {"$sum": 1},
-            "user_firstname": {"$first": "$uploaded_by_user_firstname"}
-        }},
-        {"$sort": {"count": DESCENDING}},
-        {"$limit": 10}
-    ]
-    files_by_user_agg = list(files_collection.aggregate(pipeline))
-    
-    files_by_user = [
-        {"user_id": item["_id"], 
-         "user_firstname": item.get("user_firstname", "N/A"), 
-         "count": item["count"]}
-        for item in files_by_user_agg
-    ]
-
-    recent_accesses_raw = list(access_logs_collection.find().sort("access_timestamp", DESCENDING).limit(20))
-    
-    recent_accesses = []
-    for log in recent_accesses_raw:
-        file_info = files_collection.find_one({"file_id": log["file_id"]}, {"original_file_name": 1})
-        log["original_file_name"] = file_info["original_file_name"] if file_info else "N/A (deleted?)"
-        recent_accesses.append(log)
+        recent_accesses_raw = list(access_logs_collection.find().sort("access_timestamp", DESCENDING).limit(20))
+        
+        recent_accesses = []
+        for log in recent_accesses_raw:
+            file_info = files_collection.find_one({"file_id": log["file_id"]}, {"original_file_name": 1})
+            log["original_file_name"] = file_info["original_file_name"] if file_info else "N/A (deleted?)"
+            recent_accesses.append(log)
+    except Exception as e:
+        app.logger.error(f"Error fetching data for admin dashboard: {e}", exc_info=True)
+        # Return empty data or an error message template
+        total_files, top_downloaded_files, files_by_user, recent_accesses = 0, [], [], []
+        # Consider abort(500, "Error generating dashboard data")
 
     return render_template_string(
         ADMIN_DASHBOARD_TEMPLATE,
@@ -179,16 +193,25 @@ def admin_dashboard():
 @app.errorhandler(404)
 def page_not_found(e):
     description = getattr(e, 'description', 'The requested URL was not found on the server.')
+    app.logger.warning(f"404 Not Found: {request.url} - Description: {description}")
     return render_template_string("<h1>404 - Not Found</h1><p>{{ description }}</p>", description=description), 404
 
 @app.errorhandler(503)
 def service_unavailable(e):
     description = getattr(e, 'description', 'The service is temporarily unavailable. Please try again later.')
+    app.logger.error(f"503 Service Unavailable: {request.url} - Description: {description}")
     return render_template_string("<h1>503 - Service Unavailable</h1><p>{{ description }}</p>", description=description), 503
 
-# --- HTML Templates (embedded for simplicity) ---
-# LOGIN_TEMPLATE and ADMIN_DASHBOARD_TEMPLATE remain the same as in your original file
-# (Keep them here for completeness if you copy-paste the whole file)
+@app.errorhandler(Exception) # Catch-all for other exceptions
+def handle_exception(e):
+    # For werkzeug HTTPExceptions (like 404, 503), re-raise them
+    if isinstance(e, (abort,)): # Check if it's a Werkzeug HTTPException class or instance
+         return e
+    
+    app.logger.error(f"Unhandled Exception: {e} for URL {request.url}", exc_info=True)
+    # You might want to return a generic error page
+    return render_template_string("<h1>500 - Internal Server Error</h1><p>An unexpected error occurred. Please try again later.</p>"), 500
+
 
 LOGIN_TEMPLATE = """
 <!DOCTYPE html>
@@ -324,6 +347,10 @@ ADMIN_DASHBOARD_TEMPLATE = """
 </html>
 """
 
+
 if __name__ == "__main__":
     # For local development only. Use Gunicorn in production.
+    # Basic logging for dev server
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    app.logger.info("Starting Flask development server...")
     app.run(host="0.0.0.0", port=5000, debug=True)
