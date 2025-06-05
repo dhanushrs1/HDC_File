@@ -76,7 +76,7 @@ def init_mongodb_client():
         db = mongo_client[config.MONGO_DB_NAME]
         
         files_collection = db["files"]
-        if "files" not in db.list_collection_names() or not files_collection.index_information():
+        if "files" not in db.list_collection_names() or not files_collection.index_information(): # Check if collection exists and has indexes
             logger.info("Creating MongoDB indexes for 'files' collection (bot)...")
             files_collection.create_index("file_id", unique=True)
             files_collection.create_index("upload_timestamp")
@@ -121,9 +121,12 @@ async def run_bot_main_logic(): # Renamed
     if not all([config.API_ID, config.API_HASH, config.BOT_TOKEN]):
         logger.critical("Telegram API_ID, API_HASH, or BOT_TOKEN is missing in config. Exiting.")
         return
-    if not mongo_client_conn or not db_conn or not files_collection_conn:
-        logger.critical("MongoDB is not initialized for bot. Bot cannot start. Exiting.")
+
+    # ******** THIS IS THE CORRECTED CHECK ********
+    if mongo_client_conn is None or db_conn is None or files_collection_conn is None:
+        logger.critical("MongoDB is not initialized (client, db, or collection is None). Bot cannot start. Exiting.")
         return
+    # *******************************************
 
     app_client_instance = Client(
         "file_storage_bot_session", # Session name
@@ -154,9 +157,9 @@ async def run_bot_main_logic(): # Renamed
         username = f"@{message.from_user.username}" if message.from_user.username else "N/A"
         logger.info(f"Received file from user {user_id} (username: {username}), type: {message.media}")
         
-        if not files_collection_conn: # Check if DB connection is still valid
-            logger.error(f"Database connection lost. Cannot process file for user {user_id}.")
-            await message.reply_text("Internal error: Database connection issue. Please try again later.")
+        if files_collection_conn is None: # Check if DB collection specifically is still valid
+            logger.error(f"Database collection not available. Cannot process file for user {user_id}.")
+            await message.reply_text("Internal error: Database issue. Please try again later.")
             return
 
         file_details = await get_file_details_dict(message)
@@ -177,7 +180,6 @@ async def run_bot_main_logic(): # Renamed
 
             forwarded_message = forwarded_messages[0]
             unique_id = generate_file_id_str()
-            # Ensure uniqueness in DB, though shortuuid makes collisions rare
             while files_collection_conn.count_documents({"file_id": unique_id}) > 0:
                 unique_id = generate_file_id_str()
 
@@ -199,7 +201,7 @@ async def run_bot_main_logic(): # Renamed
 
             admin_notify_text = (f"🆕 New File Uploaded!\n👤 By: {message.from_user.first_name} (ID: {user_id}, User: {username})\n"
                                  f"📄 File: {file_details['original_file_name']}\n🔗 Link: {access_link}\n🆔 File ID: {unique_id}")
-            if config.ADMIN_USER_ID:
+            if config.ADMIN_USER_ID: # Ensure ADMIN_USER_ID is valid before trying to send
                 await client.send_message(chat_id=config.ADMIN_USER_ID, text=admin_notify_text)
         except FloodWait as e:
             logger.warning(f"FloodWait for {e.value}s encountered for user {user_id}. Sleeping...")
@@ -218,7 +220,7 @@ async def run_bot_main_logic(): # Renamed
         await app_client_instance.start()
         me = await app_client_instance.get_me()
         logger.info(f"Pyrogram client started successfully as @{me.username} (ID: {me.id}). Bot is now listening for messages.")
-        await idle() # Keep the bot alive until SIGINT/SIGTERM or unhandled error in loop
+        await idle() 
         logger.info("Pyrogram client idle() returned. Bot is preparing to stop or has been stopped.")
 
     except (AuthKeyUnregistered, UserDeactivated, UserDeactivatedBan) as e:
@@ -227,7 +229,6 @@ async def run_bot_main_logic(): # Renamed
          logger.critical(f"PYROGRAM CONNECTION ERROR during startup: {e}. Check network or Telegram service status. Exiting.", exc_info=True)
     except Exception as e:
         logger.critical(f"UNEXPECTED ERROR during Pyrogram client lifecycle: {e}", exc_info=True)
-    # `finally` block for cleanup is handled by the signal handler's call to graceful_shutdown
 
 
 if __name__ == "__main__":
@@ -242,13 +243,9 @@ if __name__ == "__main__":
         current_loop.run_until_complete(run_bot_main_logic())
     except asyncio.CancelledError:
         logger.info("Main logic coroutine was cancelled (expected during shutdown).")
-    # KeyboardInterrupt should ideally be handled by SIGINT signal handler.
-    # This is a fallback if signals aren't caught as expected (e.g. on some Windows setups or if loop is already stopping)
     except KeyboardInterrupt: 
         logger.info("KeyboardInterrupt caught at top level of __main__. Forcing shutdown if not already handled.")
-        if not current_loop.is_closed(): # Check if loop is still there to run shutdown
-            # Check if graceful_shutdown is already pending or running (hard to do perfectly)
-            # For simplicity, just call it if loop isn't closed. It should be idempotent enough.
+        if not current_loop.is_closed():
             current_loop.run_until_complete(graceful_shutdown("KeyboardInterrupt_Fallback", current_loop))
     except Exception as e:
         logger.critical(f"Unhandled fatal exception in __main__ run block: {e}", exc_info=True)
