@@ -16,7 +16,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import config # This should now reliably find config.py in the project_root
+import config
 
 # Configure logging
 logging.basicConfig(
@@ -27,9 +27,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("pyrogram").setLevel(logging.WARNING) # Quieten Pyrogram for cleaner logs
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
-app_client_instance: Client = None # Renamed to avoid conflict with flask 'app'
+app_client_instance: Client = None
 
 async def graceful_shutdown(signal_received, loop):
     logger.info(f"Shutdown signal {signal_received} received. Starting graceful shutdown...")
@@ -76,7 +76,7 @@ def init_mongodb_client():
         db = mongo_client[config.MONGO_DB_NAME]
         
         files_collection = db["files"]
-        if "files" not in db.list_collection_names() or not files_collection.index_information(): # Check if collection exists and has indexes
+        if "files" not in db.list_collection_names() or not files_collection.index_information():
             logger.info("Creating MongoDB indexes for 'files' collection (bot)...")
             files_collection.create_index("file_id", unique=True)
             files_collection.create_index("upload_timestamp")
@@ -91,10 +91,10 @@ def init_mongodb_client():
 
 mongo_client_conn, db_conn, files_collection_conn = init_mongodb_client()
 
-def generate_file_id_str(): # Renamed to avoid conflict
+def generate_file_id_str():
     return shortuuid.uuid()[:10]
 
-async def get_file_details_dict(message: Message): # Renamed
+async def get_file_details_dict(message: Message):
     file_type, file_ob, original_file_name = None, None, None
     if message.document:
         file_type, file_ob, original_file_name = "document", message.document, message.document.file_name
@@ -114,7 +114,7 @@ async def get_file_details_dict(message: Message): # Renamed
                 "mime_type": getattr(file_ob, 'mime_type', None), "file_size": getattr(file_ob, 'file_size', None)}
     return None
 
-async def run_bot_main_logic(): # Renamed
+async def run_bot_main_logic():
     global app_client_instance
     logger.info("Bot main function (run_bot_main_logic) started.")
 
@@ -122,22 +122,19 @@ async def run_bot_main_logic(): # Renamed
         logger.critical("Telegram API_ID, API_HASH, or BOT_TOKEN is missing in config. Exiting.")
         return
 
-    # ******** THIS IS THE CORRECTED CHECK ********
     if mongo_client_conn is None or db_conn is None or files_collection_conn is None:
         logger.critical("MongoDB is not initialized (client, db, or collection is None). Bot cannot start. Exiting.")
         return
-    # *******************************************
 
     app_client_instance = Client(
-        "file_storage_bot_session", # Session name
+        "file_storage_bot_session",
         api_id=config.API_ID,
         api_hash=config.API_HASH,
         bot_token=config.BOT_TOKEN
     )
 
-    # Add handlers
     @app_client_instance.on_message(filters.command("start") & filters.private)
-    async def start_command_handler_func(client: Client, message: Message): # Renamed
+    async def start_command_handler_func(client: Client, message: Message):
         logger.info(f"Received /start from user {message.from_user.id} (username: @{message.from_user.username}) in chat {message.chat.id}")
         try:
             reply_text = (
@@ -152,12 +149,12 @@ async def run_bot_main_logic(): # Renamed
             logger.error(f"Error in start_command_handler for user {message.from_user.id}: {e}", exc_info=True)
 
     @app_client_instance.on_message((filters.document | filters.video | filters.photo | filters.audio | filters.voice) & filters.private)
-    async def file_handler_func(client: Client, message: Message): # Renamed
+    async def file_handler_func(client: Client, message: Message):
         user_id = message.from_user.id
         username = f"@{message.from_user.username}" if message.from_user.username else "N/A"
         logger.info(f"Received file from user {user_id} (username: {username}), type: {message.media}")
         
-        if files_collection_conn is None: # Check if DB collection specifically is still valid
+        if files_collection_conn is None:
             logger.error(f"Database collection not available. Cannot process file for user {user_id}.")
             await message.reply_text("Internal error: Database issue. Please try again later.")
             return
@@ -170,15 +167,17 @@ async def run_bot_main_logic(): # Renamed
 
         processing_msg = await message.reply_text("Processing your file...", quote=True)
         try:
-            forwarded_messages = await client.forward_messages(
+            # ******** THIS IS THE CORRECTED FORWARDING LOGIC ********
+            forwarded_message = await client.forward_messages(
                 chat_id=config.STORAGE_CHANNEL_ID, from_chat_id=message.chat.id, message_ids=message.id)
             
-            if not forwarded_messages:
+            if not forwarded_message: # Check if the Message object was returned
                 logger.error(f"Failed to forward message {message.id} to channel {config.STORAGE_CHANNEL_ID} for user {user_id}")
                 await processing_msg.edit_text("Failed to forward file. Check bot permissions in storage channel.")
                 return
+            # Now forwarded_message is the actual forwarded Message object.
+            # **********************************************************
 
-            forwarded_message = forwarded_messages[0]
             unique_id = generate_file_id_str()
             while files_collection_conn.count_documents({"file_id": unique_id}) > 0:
                 unique_id = generate_file_id_str()
@@ -201,12 +200,12 @@ async def run_bot_main_logic(): # Renamed
 
             admin_notify_text = (f"🆕 New File Uploaded!\n👤 By: {message.from_user.first_name} (ID: {user_id}, User: {username})\n"
                                  f"📄 File: {file_details['original_file_name']}\n🔗 Link: {access_link}\n🆔 File ID: {unique_id}")
-            if config.ADMIN_USER_ID: # Ensure ADMIN_USER_ID is valid before trying to send
+            if config.ADMIN_USER_ID:
                 await client.send_message(chat_id=config.ADMIN_USER_ID, text=admin_notify_text)
         except FloodWait as e:
             logger.warning(f"FloodWait for {e.value}s encountered for user {user_id}. Sleeping...")
             await asyncio.sleep(e.value)
-            await file_handler_func(client, message) # Retry
+            await file_handler_func(client, message)
         except Exception as e:
             logger.error(f"Error in file_handler for user {user_id}, file {file_details.get('original_file_name', 'N/A')}: {e}", exc_info=True)
             try:
