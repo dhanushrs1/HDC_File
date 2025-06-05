@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Run Bot",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/bot/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "envFile": "${workspaceFolder}/.env", // Ensure .env is loaded
+            "cwd": "${workspaceFolder}/bot"       // Set current working directory
+        },
+        {
+            "name": "Python: Run Flask Webapp",
+            "type": "python",
+            "request": "launch",
+            "module": "flask", // Use flask module to run
+            "env": {
+                "FLASK_APP": "webapp.main:app", // Points to your Flask app instance
+                "FLASK_DEBUG": "1"      // Enable debug mode for Flask
+            },
+            "args": [
+                "run",
+                "--no-reload" // Useful for debugger, remove if you want auto-reload
+            ],
+            "jinja": true,
+            "justMyCode": true,
+            "envFile": "${workspaceFolder}/.env", // Ensure .env is loaded
+            "cwd": "${workspaceFolder}"       // Set current working directory to project root for flask module
+        }
+    ]
+}

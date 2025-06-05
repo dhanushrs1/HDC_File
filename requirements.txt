@@ -1,0 +1,8 @@
+pyrogram
+TgCrypto
+pymongo
+Flask
+python-dotenv
+gunicorn
+shortuuid
+werkzeug
