@@ -1,0 +1,13 @@
+services:
+  # A name for your service
+  - name: hd-cinema-bot
+    # Use Docker to build the environment
+    type: worker # Use 'worker' for background tasks like bots
+    env: docker
+    # Specifies that this service should be built from the root directory
+    rootDir: .
+    # Settings for the free instance type
+    plan: free
+    # Configure auto-deploys from your main branch
+    autoDeploy: yes
+    branch: main # Or master, depending on your GitHub repository
