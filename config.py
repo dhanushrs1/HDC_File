@@ -8,29 +8,29 @@ from logging.handlers import RotatingFileHandler
 load_dotenv()
 
 #Bot token @Botfather
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "7560919239:AAFI_OiTa2kiGm5ZaP0KTx4FSR8Hp3uBAhE")
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 
 #Your API ID from my.telegram.org
-APP_ID = int(os.environ.get("APP_ID", "23081466"))
+APP_ID = int(os.environ.get("APP_ID", ""))
 
 #Your API Hash from my.telegram.org
-API_HASH = os.environ.get("API_HASH", "dbc665db1489f9d3cfd8de4a52f1ad4b")
+API_HASH = os.environ.get("API_HASH", "")
 
 #Your db channel Id
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1002046477002"))
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", ""))
 
 #OWNER ID
-OWNER_ID = int(os.environ.get("OWNER_ID", "1764208280"))
+OWNER_ID = int(os.environ.get("OWNER_ID", ""))
 
 #Port
 PORT = os.environ.get("PORT", "8080")
 
 #Database
-DB_URI = os.environ.get("DATABASE_URL", "mongodb+srv://FILESTORECLONE:FILESTORECLONE@dynamic.lzu6mpy.mongodb.net/?retryWrites=true&w=majority&appName=Dynamic")
+DB_URI = os.environ.get("DATABASE_URL", "")
 DB_NAME = os.environ.get("DATABASE_NAME", "filesharexbot")
 
 # Web Redirector URL
-REDIRECT_URL = os.environ.get("REDIRECT_URL", "https://hdcinema-files.blogspot.com/2025/06/redirect.html")
+REDIRECT_URL = os.environ.get("REDIRECT_URL", "")
 
 # --- Feature Customization ---
 START_MSG = os.environ.get("START_MESSAGE", "👋 **Hello {first}!**\n\nI am the File Sharing Bot from CodeXBotz. I can store your files securely and provide a permanent, shareable link.\n\nUse the buttons below to learn more about my features or get help.")
