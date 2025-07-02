@@ -10,3 +10,4 @@ dnspython
 aiohttp
 opencv-python
 ffmpeg-python
+psutil

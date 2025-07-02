@@ -1,50 +1,64 @@
-from bot import Bot
-from pyrogram.types import Message
-from pyrogram import filters
-from config import ADMINS, BOT_STATS_TEXT, USER_REPLY_TEXT
+"""
+(©) HD Cinema Bot
+
+This plugin handles miscellaneous commands and fallback messages.
+- /stats: A quick command for admins to see bot status.
+- A fallback handler for any private message that isn't a command.
+"""
+
 from datetime import datetime
+from pyrogram import filters
+from pyrogram.types import Message
+
+from bot import Bot
+from config import ADMINS
 from helper_func import get_readable_time
-from database.database import full_userbase
-
-# This custom filter function checks if a message is NOT a command AND NOT a reply.
-async def final_fallback_filter(_, __, message: Message):
-    is_command = bool(message.text and message.text.startswith("/"))
-    is_reply = bool(message.reply_to_message)
-    
-    # The handler should only run if it's not a command and not a reply.
-    return not is_command and not is_reply
-
-# We create a filter instance from our new, smarter function
-is_unhandled_message = filters.create(final_fallback_filter)
-
+from database.database import get_all_user_ids
 
 @Bot.on_message(filters.command('stats') & filters.user(ADMINS))
-async def stats(bot: Bot, message: Message):
+async def stats_command(bot: Bot, message: Message):
+    """A simple command for admins to get bot uptime and user count."""
     now = datetime.now()
     delta = now - bot.uptime
-    time = get_readable_time(delta.seconds)
+    uptime_str = get_readable_time(delta.seconds)
     
-    total_users = await full_userbase()
+    total_users = await get_all_user_ids()
     
     stats_text = (
         "📊 <b>HD Cinema Bot Status</b>\n\n"
-        f" » <b>Bot Uptime:</b> <code>{time}</code>\n"
+        f" » <b>Bot Uptime:</b> <code>{uptime_str}</code>\n"
         f" » <b>Active Users:</b> <code>{len(total_users)}</code>"
     )
     
-    # Using the BOT_STATS_TEXT variable is optional, but this shows how it could be used.
-    # For now, we will use our custom, more detailed message.
     await message.reply(stats_text)
 
 
-# This now uses our custom filter to prevent any conflicts with other commands.
-@Bot.on_message(filters.private & filters.incoming & is_unhandled_message)
-async def useless(_,message: Message):
-    if USER_REPLY_TEXT:
-        # Rebranded and more helpful user reply
-        rebranded_reply_text = (
-            "👋 Hello! I am the HD Cinema File Share bot.\n\n"
-            "I can only provide files through special links. I am not able to chat directly.\n\n"
-            "If you need help, please use the buttons from the /start command."
-        )
-        await message.reply(rebranded_reply_text)
+# This handler is in a lower priority group. It will only run if no other
+# handlers in the default group (like /start) process the message first.
+@Bot.on_message(filters.private, group=1)
+async def unhandled_message_handler(client: Bot, message: Message):
+    """
+    Handles any incoming private message that isn't a recognized command.
+    Politely informs the user that the bot is not for chatting.
+    """
+    # This prevents the bot from replying to its own messages or edits.
+    if message.from_user.id == client.me.id:
+        return
+
+    # FIXED: Explicitly ignore any message that is a command.
+    # This is the most reliable way to prevent this handler from running
+    # after a command like /start has already been processed.
+    if message.text and message.text.startswith('/'):
+        return
+
+    # Ignore media messages from admins, as they are handled by the linker plugin.
+    if message.from_user.id in ADMINS and message.media:
+        return
+
+    reply_text = (
+        "👋 Hello! I am the HD Cinema File Bot.\n\n"
+        "I am not designed for chatting. I can only provide files through special links "
+        "or respond to commands like /start and /request.\n\n"
+        "If you need help, please use the buttons from the /start command menu."
+    )
+    await message.reply(reply_text)
