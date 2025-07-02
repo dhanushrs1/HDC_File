@@ -1,18 +1,17 @@
 """
 (©) HD Cinema Bot
 
-This plugin provides a powerful, command-less, and interactive search experience.
-- Listens to all messages in private chat and approved groups.
-- Automatically searches for files based on message text.
-- In groups, replies with a button to view results in private chat.
-- In private chat, displays a clean, paginated list of results.
-- Allows users to select a file and receive a secure access link.
+Interactive, command-less file search experience:
+- Searches for files based on message content.
+- In groups, replies with a button linking to private chat.
+- In private chat, displays paginated results and secure access links.
 """
 
 import logging
 import math
+from urllib.parse import quote_plus
 from pyrogram import Client, filters
-from pyrogram.enums import ChatMemberStatus
+from pyrogram.enums import ChatType, ChatMemberStatus
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import UserNotParticipant, UserIsBlocked
 
@@ -21,18 +20,16 @@ from config import ADMINS, GROUP_SEARCH_PIC
 from database.database import search_files, get_approved_groups
 from helper_func import encode, format_bytes
 
-# Set up a logger for this module
 logger = logging.getLogger(__name__)
 
-# --- Constants ---
+# Constants
 RESULTS_PER_PAGE = 5
 MIN_QUERY_LENGTH = 3
 
-# ======================================================================================
-#                              *** Main Search Handler ***
-# ======================================================================================
+# ============================================================================
+# Group approval check (bot must be admin and group must be approved)
+# ============================================================================
 
-# Custom filter to check if a message is from an approved group where the bot is an admin
 async def is_approved_admin_group(_, client: Bot, message: Message):
     approved_group_ids = [group['_id'] for group in await get_approved_groups()]
     if message.chat.id not in approved_group_ids:
@@ -45,15 +42,16 @@ async def is_approved_admin_group(_, client: Bot, message: Message):
 
 approved_group_filter = filters.create(is_approved_admin_group)
 
+# ============================================================================
+# Main search handler: works in both group and private
+# ============================================================================
+
 @Bot.on_message(filters.text & (filters.private | approved_group_filter) & ~filters.via_bot, group=1)
 async def universal_search_handler(client: Bot, message: Message):
-    """
-    This is the main handler that listens to every message and triggers a search.
-    """
     if message.text.startswith('/'):
         return
 
-    query = message.text
+    query = message.text.strip()
     if len(query) < MIN_QUERY_LENGTH:
         return
 
@@ -61,58 +59,66 @@ async def universal_search_handler(client: Bot, message: Message):
     if not results:
         return
 
-    # --- Group Context: Reply with a button to view results in PM ---
-    if message.chat.type in ["group", "supergroup"]:
+    if message.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        # Group: Reply with a direct deep link to the bot PM
+        bot_username = client.me.username
+        # URL-encode the search query to handle spaces and special characters
+        encoded_query = quote_plus(query)
+
         keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(f"✅ Found {len(results)} results. Click to view.", callback_data=f"showresults_{query}")]]
+            [[InlineKeyboardButton(
+                f"✅ Found {len(results)} result(s). Tap to view.",
+                url=f"https://t.me/{bot_username}?start=search_{encoded_query}"
+            )]]
         )
+
         caption = (
-            f"👋 Hey {message.from_user.mention}, I found some results for your query!\n\n"
-            "Click the button below and I'll send them to you in a private message."
+            f"👋 Hey {message.from_user.mention}, I found some results for your query.\n\n"
+            "Tap the button below to view them in your private chat."
         )
         if GROUP_SEARCH_PIC:
-            await message.reply_photo(photo=GROUP_SEARCH_PIC, caption=caption, reply_markup=keyboard, quote=True)
+            await message.reply_photo(GROUP_SEARCH_PIC, caption=caption, reply_markup=keyboard, quote=True)
         else:
             await message.reply_text(caption, reply_markup=keyboard, quote=True)
-            
-    # --- Private Chat Context: Directly show the results ---
+
     else:
+        # Private chat: Show results immediately
         await send_search_results(message, query, results, page=1)
 
-# ======================================================================================
-#                              *** Interactive UI Functions ***
-# ======================================================================================
+# ============================================================================
+# Results Renderer (pagination & buttons)
+# ============================================================================
 
 async def send_search_results(source, query, results, page):
-    """
-    Sends a paginated list of search results to the user in a private message.
-    'source' can be a Message or a CallbackQuery.
-    """
     total_results = len(results)
     total_pages = math.ceil(total_results / RESULTS_PER_PAGE)
-    
-    start_index = (page - 1) * RESULTS_PER_PAGE
-    end_index = start_index + RESULTS_PER_PAGE
-    results_to_show = results[start_index:end_index]
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * RESULTS_PER_PAGE
+    end_idx = start_idx + RESULTS_PER_PAGE
+    display_results = results[start_idx:end_idx]
 
     keyboard = []
-    for doc in results_to_show:
-        file_name = doc['file_name']
-        file_size = doc.get('file_size', 0)
-        # Add file size to the button for a better user experience
-        button_text = f"📄 {file_name[:35]} ({format_bytes(file_size)})"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"selectfile_{doc['_id']}")])
+    for doc in display_results:
+        name = doc['file_name']
+        size = format_bytes(doc.get('file_size', 0))
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📄 {name[:40]} ({size})",
+                callback_data=f"selectfile_{doc['_id']}"
+            )
+        ])
 
-    pagination_row = []
+    nav_row = []
     if page > 1:
-        pagination_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"spage_{page-1}_{query}"))
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"spage_{page - 1}_{query}"))
     if page < total_pages:
-        pagination_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page+1}_{query}"))
-    if pagination_row:
-        keyboard.append(pagination_row)
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"spage_{page + 1}_{query}"))
+    if nav_row:
+        keyboard.append(nav_row)
 
-    text = f"🔎 <b>Search Results for '{query}'</b> (Page {page}/{total_pages})\n\nPlease select the file you want:"
-    
+    text = f"🔎 <b>Results for '{query}'</b> (Page {page}/{total_pages})\n\nPlease select a file below:"
+
     try:
         if isinstance(source, Message):
             await source.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -120,56 +126,39 @@ async def send_search_results(source, query, results, page):
             await source.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     except (UserIsBlocked, UserNotParticipant):
         if isinstance(source, CallbackQuery):
-            await source.answer("I can't send you messages. Please start me in private first!", show_alert=True)
+            await source.answer("I can't message you. Please start me in private first.", show_alert=True)
 
-# ======================================================================================
-#                              *** Callback Handlers ***
-# ======================================================================================
-
-@Bot.on_callback_query(filters.regex("^showresults_"))
-async def show_results_callback(client: Bot, query: CallbackQuery):
-    """Handles the 'Click to view' button from a group."""
-    search_query = query.data.split("_", 1)[1]
-    
-    await query.answer("Searching... I'll send the results to your private chat.", show_alert=False)
-    
-    results = await search_files(search_query, limit=50)
-    if not results:
-        try:
-            await client.send_message(query.from_user.id, "Sorry, I couldn't find any results for that query anymore.")
-        except UserIsBlocked:
-            await query.answer("I can't send you messages. Please start me in private first!", show_alert=True)
-        return
-        
-    await send_search_results(query, search_query, results, page=1)
+# ============================================================================
+# Callback handler: pagination
+# ============================================================================
 
 @Bot.on_callback_query(filters.regex("^spage_"))
-async def search_page_callback(client: Bot, query: CallbackQuery):
-    """Handles the pagination buttons."""
-    parts = query.data.split("_", 2)
-    page = int(parts[1])
-    search_query = parts[2]
-    
+async def handle_page_switch(client: Bot, query: CallbackQuery):
+    _, page_str, search_term = query.data.split("_", 2)
+    page = int(page_str)
     await query.answer()
-    
-    results = await search_files(search_query, limit=50)
-    await send_search_results(query, search_query, results, page=page)
+    results = await search_files(search_term, limit=50)
+    await send_search_results(query, search_term, results, page)
+
+# ============================================================================
+# Callback handler: file selected
+# ============================================================================
 
 @Bot.on_callback_query(filters.regex("^selectfile_"))
-async def select_file_callback(client: Bot, query: CallbackQuery):
-    """Handles the final file selection and sends the access link."""
+async def handle_file_selection(client: Bot, query: CallbackQuery):
     file_id = int(query.data.split("_")[-1])
-    
-    await query.answer("Generating your secure link...", show_alert=False)
-    
+    await query.answer("Generating your link...", show_alert=False)
+
     unique_id = file_id * abs(client.db_channel.id)
-    encoded_string = await encode(f"get-{unique_id}")
-    link = f"{client.config.REDIRECT_URL}?start={encoded_string}"
-    
+    encoded = await encode(f"get-{unique_id}")
+    link = f"{client.config.REDIRECT_URL}?start={encoded}"
+
     await query.message.edit_text(
         f"✅ <b>Your Link is Ready!</b>\n\n"
-        f"Click the link below to get your file.\n\n"
+        f"Click below to access your file:\n\n"
         f"<code>{link}</code>",
         disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Get File", url=link)]])
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Get File", url=link)]
+        ])
     )

@@ -11,6 +11,7 @@ This plugin handles the /start command and other essential user commands.
 import asyncio
 import logging
 import random
+from urllib.parse import unquote_plus
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, MessageNotModified
@@ -23,7 +24,8 @@ from config import (
     FORCE_SUB_CHANNEL
 )
 from helper_func import subscribed, decode, get_messages, handle_file_expiry, get_readable_time
-from database.database import add_user, delete_user, get_all_user_ids, is_user_present, log_file_download
+from database.database import add_user, delete_user, get_all_user_ids, is_user_present, log_file_download, search_files
+from plugins.search import send_search_results # Import the function from search plugin
 
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
@@ -41,47 +43,80 @@ QUOTES = [
 #                              *** Core /start Logic ***
 # ======================================================================================
 
-@Bot.on_message(filters.command('start') & filters.private & subscribed)
+@Bot.on_message(filters.command('start') & filters.private)
 async def start_command(client: Bot, message: Message):
     """
-    Handles the /start command.
-    - If a deep link is present, it serves the corresponding file(s).
-    - Otherwise, it shows a welcome message.
+    Handles the /start command. It can now process three types of payloads:
+    1. A file/batch link (`get-...`).
+    2. A search link from a group (`search_...`).
+    3. No payload (a regular /start).
+    This handler also includes the force-subscribe logic to prevent conflicts.
     """
+    # --- 1. Check Force Subscription ---
+    if not await subscribed(client, message):
+        return await force_sub_handler(client, message)
+
+    # --- 2. If subscribed, proceed with main logic ---
     user_id = message.from_user.id
     
     if not await is_user_present(user_id):
         await add_user(user_id)
         logger.info(f"New user added: {user_id}")
 
+    # --- 3. Check for deep link payload ---
     if len(message.command) > 1:
-        try:
-            base64_string = message.command[1]
-            string = await decode(base64_string)
-            args = string.split("-")
+        payload = message.command[1]
+
+        # --- Handle Search Payload ---
+        if payload.startswith("search_"):
+            query = unquote_plus(payload.split("_", 1)[1])
+            results = await search_files(query, limit=50)
             
-            if len(args) == 3:
-                start, end = int(int(args[1]) / abs(client.db_channel.id)), int(int(args[2]) / abs(client.db_channel.id))
-                ids = range(start, end + 1)
-            elif len(args) == 2:
-                ids = [int(int(args[1]) / abs(client.db_channel.id))]
+            # --- De-duplication Logic ---
+            unique_results = []
+            seen_filenames = set()
+            for doc in results:
+                filename = doc.get('file_name')
+                if filename and filename not in seen_filenames:
+                    unique_results.append(doc)
+                    seen_filenames.add(filename)
+            # --- End De-duplication ---
+
+            if unique_results:
+                await send_search_results(message, query, unique_results, page=1)
             else:
-                await send_welcome_message(client, message)
-                return
+                await message.reply_text(f"❌ No results found for '{query}'.")
+            return
 
-            await process_file_request(client, message, ids)
-        except Exception as e:
-            logger.error(f"Error processing deep link for user {user_id}: {e}")
-            await message.reply_text("<b>Error:</b> The link seems to be invalid or expired.")
-        return
+        # --- Handle File/Batch Payload ---
+        else:
+            try:
+                string = await decode(payload)
+                args = string.split("-")
+                
+                if len(args) == 3: # Batch link
+                    start, end = int(int(args[1]) / abs(client.db_channel.id)), int(int(args[2]) / abs(client.db_channel.id))
+                    ids = range(start, end + 1)
+                elif len(args) == 2: # Single file link
+                    ids = [int(int(args[1]) / abs(client.db_channel.id))]
+                else:
+                    await send_welcome_message(client, message)
+                    return
 
+                await process_file_request(client, message, ids)
+            except Exception as e:
+                logger.error(f"Error processing deep link for user {user_id}: {e}")
+                await message.reply_text("<b>Error:</b> The link seems to be invalid or expired.")
+            return
+
+    # --- 4. No Payload: Show Welcome Message ---
     await send_welcome_message(client, message)
+
 
 async def send_welcome_message(client: Bot, message: Message):
     """Displays a professional and feature-rich welcome message."""
     user = message.from_user
     
-    # Main keyboard for all users
     keyboard = [
         [InlineKeyboardButton("🎬 Request Content", callback_data="request_info")],
         [
@@ -94,13 +129,11 @@ async def send_welcome_message(client: Bot, message: Message):
         ]
     ]
 
-    # Add Admin Panel button for admins
     if user.id in ADMINS:
         keyboard.insert(0, [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_main_menu")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Create a more engaging start message
     start_text = (
         f"👋 Hello {user.mention}!\n\n"
         f"{START_MSG}\n\n"
@@ -168,8 +201,7 @@ async def process_file_request(client: Bot, message: Message, ids: list):
 #                              *** Force Subscribe & Admin Commands ***
 # ======================================================================================
 
-@Bot.on_message(filters.command('start') & filters.private)
-async def not_subscribed_handler(client: Bot, message: Message):
+async def force_sub_handler(client: Bot, message: Message):
     """Handles users who have not subscribed to the force-sub channel."""
     buttons = []
     if JOIN_REQUEST_ENABLE and client.invitelink:
@@ -219,7 +251,7 @@ async def broadcast_command(client: Bot, message: Message):
             await asyncio.sleep(e.value)
             await broadcast_msg.copy(user_id)
             successful += 1
-        except (UserIsBlocked, InputUserDeactivated):
+        except (UserIsBlocked, InputUserDeactivated) as e:
             await delete_user(user_id)
             if isinstance(e, UserIsBlocked): blocked += 1
             else: deleted += 1

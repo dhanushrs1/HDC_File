@@ -101,6 +101,7 @@ FORCE_MSG = get_env_var("FORCE_SUB_MESSAGE", default="Hello {first},\n\n<b>To us
 # --- Video Workspace & Temp File Manager ---
 TEMP_DIR = get_env_var("TEMP_DIR", default="temp_downloads/") # Directory for temporary files
 SESSION_TIMEOUT = get_env_var("SESSION_TIMEOUT", default=1800, is_int=True) # In seconds (30 minutes)
+SCREENSHOT_WATERMARK = get_env_var("SCREENSHOT_WATERMARK", default="HD Cinema") # Add a watermark to screenshots
 
 # --- Smart File Expiry ---
 AUTO_DELETE_TIME = get_env_var("AUTO_DELETE_TIME", default=600, is_int=True) # In seconds (10 minutes)

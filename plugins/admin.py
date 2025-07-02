@@ -49,7 +49,7 @@ def format_bytes(size_bytes):
 async def build_main_menu():
     """Builds the main admin dashboard with live stats."""
     total_users = len(await get_all_user_ids())
-    total_files = await get_total_file_stats()
+    total_files, total_indexed_size = await get_total_file_stats()
     storage_size, data_size = await get_db_stats()
     
     now = datetime.now().strftime("%I:%M:%S %p")
@@ -58,9 +58,8 @@ async def build_main_menu():
         f"👑 <b>Admin Panel</b> 👑\n\n"
         f"Here's a quick overview of your bot's status:\n\n"
         f"👤 <b>Users:</b> <code>{total_users}</code>\n"
-        f"🗂️ <b>Files Indexed:</b> <code>{total_files}</code>\n"
-        f"💽 <b>Data Size:</b> <code>{format_bytes(data_size)}</code>\n"
-        f"💾 <b>Storage Size:</b> <code>{format_bytes(storage_size)}</code>\n\n"
+        f"🗂️ <b>Files Indexed:</b> <code>{total_files}</code> (<code>{format_bytes(total_indexed_size)}</code>)\n"
+        f"💾 <b>DB Storage Size:</b> <code>{format_bytes(storage_size)}</code>\n\n"
         f"<i>Last Updated: {now}</i>"
     )
     
