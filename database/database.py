@@ -229,3 +229,12 @@ async def search_files(query: str, limit: int = 15):
     except OperationFailure as e:
         logger.error(f"DB Error during file search for query '{query}': {e}")
         return []
+
+async def get_setting(key, default=None):
+    doc = database['settings'].find_one({"_id": key})
+    if doc and "value" in doc:
+        return doc["value"]
+    return default
+
+async def set_setting(key, value):
+    database['settings'].update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)

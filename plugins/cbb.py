@@ -94,7 +94,7 @@ async def main_menu_callback_handler(client: Bot, query: CallbackQuery):
         ]
         if user.id in ADMINS:
             # The button is still added here, but now the handler will catch it.
-            keyboard.insert(0, [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_main_menu")])
+            keyboard.insert(0, [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_action_refresh")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         

@@ -9,6 +9,7 @@ This plugin handles the /start command with a robust security model.
 """
 
 import asyncio
+import hashlib
 import logging
 import random
 from urllib.parse import unquote_plus
@@ -85,7 +86,9 @@ async def start_command(client: Bot, message: Message):
             unique_results = [doc for i, doc in enumerate(results) if doc.get('file_name') not in {d.get('file_name') for d in results[:i]}]
 
             if unique_results:
-                await send_search_results(message, query, unique_results, page=1)
+                # --- FIX: Generate query_hash for deep-link search ---
+                query_hash = hashlib.md5(query.encode()).hexdigest()[:10]
+                await send_search_results(message, query, query_hash, unique_results, page=1)
             else:
                 await message.reply_text(f"❌ No results found for '<code>{query}</code>'.")
             return
@@ -130,7 +133,7 @@ async def send_welcome_message(client: Bot, message: Message):
     ]
 
     if user.id in ADMINS:
-        keyboard.insert(0, [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_main_menu")])
+        keyboard.insert(0, [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_action_refresh")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -180,9 +183,16 @@ async def process_file_request(client: Bot, message: Message, ids: list):
                 protect_content=PROTECT_CONTENT
             )
             if AUTO_DELETE_TIME > 0:
+                # Inform the user about file expiry and re-request instructions
+                expiry_text = (
+                    f"⏳ <b>This file will be deleted in: {get_readable_time(AUTO_DELETE_TIME)}</b>\n\n"
+                    "You can forward or save this file elsewhere before it expires.\n"
+                    "After expiry, you can request this file <b>one more time</b> using the same link."
+                )
+                expiry_msg = await sent_message.reply_text(expiry_text, quote=True)
                 asyncio.create_task(handle_file_expiry(
                     client,
-                    await sent_message.reply_text(f"⏳ This file will expire in: <b>{get_readable_time(AUTO_DELETE_TIME)}</b>", quote=True),
+                    expiry_msg,
                     sent_message,
                     msg.id
                 ))

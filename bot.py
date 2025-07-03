@@ -16,14 +16,13 @@ from pyrogram.enums import ParseMode
 # Import our custom configuration
 import config
 
-# --- ASCII Art for a professional startup message ---
+# --- Unique Startup Banner ---
 ASCII_ART = """
-██╗  ██╗██████╗   ██████╗ ██╗  ██╗███╗   ███╗ █████╗ ███████╗ █████╗ 
-██║  ██║██╔══██╗  ██╔══██╗██║  ██║████╗ ████║██╔══██╗██╔════╝██╔══██╗
-███████║██║  ██║  ██████╔╝███████║██╔████╔██║███████║█████╗  ███████║
-██╔══██║██║  ██║  ██╔══██╗██╔══██║██║╚██╔╝██║██╔══██║██╔══╝  ██╔══██║
-██║  ██║██████╔╝  ██║  ██║██║  ██║██║ ╚═╝ ██║██║  ██║███████╗██║  ██║
-╚═╝  ╚═╝╚═════╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
+╔══════════════════════════════════════════════════════════╗
+║        🎬 HD CINEMA BOT - FileShareX 🎬                ║
+║  Your Ultimate Telegram File & Movie Indexing Partner   ║
+║  Fast • Secure • Reliable • Powered by Pyrogram+MongoDB ║
+╚══════════════════════════════════════════════════════════╝
 """
 
 class Bot(Client):
@@ -119,14 +118,16 @@ class Bot(Client):
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             msg = (
-                f"🚀 <b><u>Bot Restarted</u></b> 🚀\n\n"
+                f"🎬 <b>HD Cinema Bot Restarted</b>\n\n"
                 f"<b>Time:</b> <code>{now}</code>\n"
                 f"<b>Host:</b> <code>{platform.node()}</code>\n"
                 f"<b>Python:</b> <code>{sys.version.split()[0]}</code>\n"
-                f"<b>Pyrogram:</b> <code>{pyrogram_version}</code>"
+                f"<b>Pyrogram:</b> <code>{pyrogram_version}</code>\n"
+                f"<b>Status:</b> <code>Online & Ready!</code>"
             )
             
             await self.send_message(chat_id=self.config.OWNER_ID, text=msg)
             
         except Exception as e:
-            self.LOGGER(__name__).error(f"Could not notify admin on restart: {e}")
+            self.LOGGER(__name__).error(f"Admin restart notification failed: {e}")
+            self.LOGGER(__name__).error(f"Admin restart notification failed: {e}")

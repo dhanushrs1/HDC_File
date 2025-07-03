@@ -18,14 +18,17 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified, FloodWait, UserIsBlocked, InputUserDeactivated
 from pyrogram.handlers import MessageHandler
+from pyrogram import filters
 
 from bot import Bot
-from config import ADMINS, TEMP_DIR
+from config import ADMINS, TEMP_DIR, ADMIN_SEARCH_IN_PM
+import config as config_module # Import the module itself to modify the variable
 from database.database import (
     get_all_user_ids, get_all_users, ban_user, unban_user, get_user,
     get_daily_download_counts, get_top_downloaded_files, get_total_file_stats,
     get_db_stats, get_user_download_count, get_user_last_downloads,
-    add_group, remove_group, get_approved_groups, delete_user
+    add_group, remove_group, get_approved_groups, delete_user,
+    get_setting, set_setting  # <-- Add these
 )
 from helper_func import get_readable_time
 
@@ -61,6 +64,10 @@ async def build_main_menu(client: Client):
         f"🗂️ <b>Indexed Files:</b> <code>{total_files}</code> (<code>{format_bytes(total_size)}</code>)"
     )
 
+    # Always fetch the latest value from DB
+    admin_search_in_pm = await get_setting("ADMIN_SEARCH_IN_PM", default=True)
+    search_status_text = "✅ Admin Search: ON" if admin_search_in_pm else "❌ Admin Search: OFF"
+    
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📈 Analytics", callback_data="admin_view_analytics"),
@@ -73,9 +80,13 @@ async def build_main_menu(client: Client):
         [
             InlineKeyboardButton("🔗 Get Link", callback_data="admin_action_genlink"),
             InlineKeyboardButton("🖥️ Server", callback_data="admin_view_server"),
+        ],
+        [
+            InlineKeyboardButton(search_status_text, callback_data="admin_action_togglesearch"),
             InlineKeyboardButton("📂 Temp Files", callback_data="admin_view_tempfiles")
         ],
-        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_action_refresh")]
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_action_refresh")],
+        [InlineKeyboardButton("🏠 Go to User Panel", callback_data="admin_action_gotostart")]  # <-- New button
     ])
     return text, keyboard
 
@@ -119,13 +130,26 @@ async def admin_callback_handler(client: Bot, query: CallbackQuery):
             if action == "refresh":
                 text, keyboard = await build_main_menu(client)
                 await query.message.edit_text(text, reply_markup=keyboard)
-            elif action == "broadcast": await handle_broadcast(client, query)
-            elif action in ("ban", "unban"): await handle_ban_unban(client, query, action=data[2], user_id=int(data[3]), page=int(data[4]))
-            elif action == "disapprovegroup": await handle_disapprove_group(client, query, group_id=int(data[3]))
-            elif action == "deletetemp": await handle_delete_temp_file(query, file_name="_".join(data[3:]))
+            elif action == "broadcast":
+                await handle_broadcast(client, query)
+            elif action in ("ban", "unban"):
+                await handle_ban_unban(client, query, action=data[2], user_id=int(data[3]), page=int(data[4]))
+            elif action == "disapprovegroup":
+                await handle_disapprove_group(client, query, group_id=int(data[3]))
+            elif action == "deletetemp":
+                await handle_delete_temp_file(query, file_name="_".join(data[3:]))
+            elif action == "togglesearch":
+                await handle_toggle_admin_search(client, query)
             elif action == "genlink":
                 await query.answer("Forwarding you to the Link Generator...", show_alert=True)
                 await client.send_message(query.from_user.id, "/genlink")
+            elif action == "gotostart":
+                from plugins.start import send_welcome_message  # Import here to avoid circular import
+                await query.message.delete()
+                await send_welcome_message(client, query.message)
+            # Removed: elif action == "usersearch": ...
+            # Removed: elif action == "showuser": ...
+
 
     except MessageNotModified:
         pass
@@ -360,6 +384,26 @@ async def handle_disapprove_group(client: Client, query: CallbackQuery, group_id
     try: await client.leave_chat(group_id)
     except: pass
     await show_groups_list(client, query)
+
+
+async def handle_toggle_admin_search(client: Client, query: CallbackQuery):
+    """Toggles the admin search in PM feature on or off and persists it."""
+    # Get current value from DB
+    current = await get_setting("ADMIN_SEARCH_IN_PM", default=True)
+    new_value = not current
+    await set_setting("ADMIN_SEARCH_IN_PM", new_value)
+    # Optionally update in-memory config for legacy code
+    config_module.ADMIN_SEARCH_IN_PM = new_value
+
+    status = "ON" if new_value else "OFF"
+    await query.answer(f"Admin PM Search is now {status}")
+
+    # Rebuild and show the main menu to reflect the change
+    text, keyboard = await build_main_menu(client)
+    try:
+        await query.message.edit_text(text, reply_markup=keyboard)
+    except MessageNotModified:
+        pass
 
 
 # ======================================================================================
