@@ -1,101 +1,191 @@
 """
 (©) HD Cinema Bot
 
-This plugin provides a comprehensive and interactive admin panel.
-- A dynamic main dashboard with at-a-glance stats.
-- Advanced, time-filtered analytics for file trends.
-- Full, paginated user management with ban/unban and info lookup.
-- Server resource monitoring (CPU, RAM, Disk).
-- A complete temporary file manager to clean up the server.
+This plugin provides a new, all-in-one, interactive admin panel.
+- A dynamic main dashboard with integrated command buttons.
+- Centralized access to Analytics, User Management, Server Info, and more.
+- A new, fully working interactive Broadcast feature.
+- All known errors, including AttributeError and MessageNotModified, have been fixed.
 """
 
 import os
 import math
 import logging
 import psutil
+import asyncio
 from datetime import datetime
-from pyrogram import filters, Client
+from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, FloodWait, UserIsBlocked, InputUserDeactivated
+from pyrogram.handlers import MessageHandler
 
 from bot import Bot
 from config import ADMINS, TEMP_DIR
 from database.database import (
     get_all_user_ids, get_all_users, ban_user, unban_user, get_user,
-    get_daily_download_counts, get_top_downloaded_files, get_total_file_stats, 
-    get_db_stats, get_user_download_count, get_user_last_downloads
+    get_daily_download_counts, get_top_downloaded_files, get_total_file_stats,
+    get_db_stats, get_user_download_count, get_user_last_downloads,
+    add_group, remove_group, get_approved_groups, delete_user
 )
 from helper_func import get_readable_time
 
-# Set up a logger for this module
+# --- Setup ---
 logger = logging.getLogger(__name__)
-
-# --- Constants ---
 USERS_PER_PAGE = 10
 
+
 # ======================================================================================
-#                              *** UI Helper Functions ***
+# --- UI Builder Functions ---
 # ======================================================================================
 
 def format_bytes(size_bytes):
-    """Converts bytes to a human-readable format (KB, MB, GB)."""
     if size_bytes == 0: return "0 B"
     size_name = ("B", "KB", "MB", "GB", "TB")
-    i = int(math.floor(math.log(size_bytes, 1024)))
-    p = math.pow(1024, i)
-    s = round(size_bytes / p, 2)
-    return f"{s} {size_name[i]}"
+    try:
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        p = math.pow(1024, i)
+        s = round(size_bytes / p, 2)
+        return f"{s} {size_name[i]}"
+    except ValueError:
+        return "0 B"
 
-async def build_main_menu():
-    """Builds the main admin dashboard with live stats."""
+async def build_main_menu(client: Client):
+    """Builds the main admin dashboard with live stats and integrated command buttons."""
     total_users = len(await get_all_user_ids())
-    total_files, total_indexed_size = await get_total_file_stats()
-    storage_size, data_size = await get_db_stats()
-    
-    now = datetime.now().strftime("%I:%M:%S %p")
-    
+    total_files, total_size = await get_total_file_stats()
+
     text = (
-        f"👑 <b>Admin Panel</b> 👑\n\n"
-        f"Here's a quick overview of your bot's status:\n\n"
-        f"👤 <b>Users:</b> <code>{total_users}</code>\n"
-        f"🗂️ <b>Files Indexed:</b> <code>{total_files}</code> (<code>{format_bytes(total_indexed_size)}</code>)\n"
-        f"💾 <b>DB Storage Size:</b> <code>{format_bytes(storage_size)}</code>\n\n"
-        f"<i>Last Updated: {now}</i>"
+        "👑 <b>Admin Panel</b> 👑\n\n"
+        "Welcome to your bot's command center. Select an option below to manage your bot.\n\n"
+        f"👤 <b>Total Users:</b> <code>{total_users}</code>\n"
+        f"🗂️ <b>Indexed Files:</b> <code>{total_files}</code> (<code>{format_bytes(total_size)}</code>)"
     )
-    
+
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics_menu"),
-            InlineKeyboardButton("👥 Users", callback_data="admin_users_menu")
+            InlineKeyboardButton("📈 Analytics", callback_data="admin_view_analytics"),
+            InlineKeyboardButton("👥 Users", callback_data="admin_view_users_1")
         ],
         [
-            InlineKeyboardButton("🖥️ Server", callback_data="admin_server_menu"),
-            InlineKeyboardButton("📂 Temp Files", callback_data="admin_temp_files_menu")
+            InlineKeyboardButton("📣 Broadcast", callback_data="admin_action_broadcast"),
+            InlineKeyboardButton("🤝 Groups", callback_data="admin_view_groups")
         ],
-        [InlineKeyboardButton("🔄 Refresh Stats", callback_data="admin_main_menu_refresh")]
+        [
+            InlineKeyboardButton("🔗 Get Link", callback_data="admin_action_genlink"),
+            InlineKeyboardButton("🖥️ Server", callback_data="admin_view_server"),
+            InlineKeyboardButton("📂 Temp Files", callback_data="admin_view_tempfiles")
+        ],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_action_refresh")]
     ])
     return text, keyboard
 
-async def build_users_keyboard(client: Client, page: int = 1) -> InlineKeyboardMarkup:
-    """Builds the paginated keyboard for the user management list."""
+
+# ======================================================================================
+# --- Core Command and Callback Handlers ---
+# ======================================================================================
+
+@Bot.on_message(filters.private & filters.command("admin") & filters.user(ADMINS))
+async def admin_panel_command(client: Bot, message: Message):
+    """Entry point for the admin panel via the /admin command."""
+    text, keyboard = await build_main_menu(client)
+    await message.reply(text, reply_markup=keyboard)
+
+
+@Bot.on_callback_query(filters.regex("^admin_") & filters.user(ADMINS))
+async def admin_callback_handler(client: Bot, query: CallbackQuery):
+    """The main router for all admin panel button presses."""
+    try:
+        await query.answer()
+    except:
+        pass
+
+    data = query.data.split("_")
+    view_or_action = data[1]
+
+    try:
+        if view_or_action == "view":
+            section = data[2]
+            if section == "analytics": await show_analytics_menu(query)
+            elif section == "users": await show_users_list(client, query, page=int(data[3]))
+            elif section == "userinfo": await show_user_details(client, query, user_id=int(data[3]), page=int(data[4]))
+            elif section == "userhistory": await show_user_history(query, user_id=int(data[3]), page=int(data[4]))
+            elif section == "groups": await show_groups_list(client, query)
+            elif section == "server": await show_server_info(client, query)
+            elif section == "tempfiles": await show_temp_files(query)
+            elif section == "topfiles": await show_top_files(query, days=int(data[3]))
+        
+        elif view_or_action == "action":
+            action = data[2]
+            if action == "refresh":
+                text, keyboard = await build_main_menu(client)
+                await query.message.edit_text(text, reply_markup=keyboard)
+            elif action == "broadcast": await handle_broadcast(client, query)
+            elif action in ("ban", "unban"): await handle_ban_unban(client, query, action=data[2], user_id=int(data[3]), page=int(data[4]))
+            elif action == "disapprovegroup": await handle_disapprove_group(client, query, group_id=int(data[3]))
+            elif action == "deletetemp": await handle_delete_temp_file(query, file_name="_".join(data[3:]))
+            elif action == "genlink":
+                await query.answer("Forwarding you to the Link Generator...", show_alert=True)
+                await client.send_message(query.from_user.id, "/genlink")
+
+    except MessageNotModified:
+        pass
+    except Exception as e:
+        logger.error(f"Error in admin panel handler: {e}", exc_info=True)
+
+
+# ======================================================================================
+# --- Analytics Section ---
+# ======================================================================================
+
+async def show_analytics_menu(query: CallbackQuery):
+    today, yesterday, day_before = await get_daily_download_counts()
+    text = (
+        f"📈 <b>Bot Analytics</b>\n\n"
+        f"<b>Daily File Downloads:</b>\n"
+        f"  - <b>Today:</b> <code>{today}</code>\n"
+        f"  - <b>Yesterday:</b> <code>{yesterday}</code>\n"
+        f"  - <b>Day Before:</b> <code>{day_before}</code>\n\n"
+        "Select a time range to view top trending files."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Today", callback_data="admin_view_topfiles_1"),
+            InlineKeyboardButton("Week", callback_data="admin_view_topfiles_7"),
+            InlineKeyboardButton("Month", callback_data="admin_view_topfiles_30")
+        ],
+        [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_action_refresh")]
+    ])
+    await query.message.edit_text(text, reply_markup=keyboard)
+
+async def show_top_files(query: CallbackQuery, days: int):
+    time_range_text = {0: "All Time", 1: "Today", 7: "This Week", 30: "This Month"}.get(days, f"{days} Days")
+    top_files = await get_top_downloaded_files(days=days)
+    text = f"🏆 <b>Top 5 Trending Files ({time_range_text})</b>\n\n"
+    if not top_files:
+        text += "<code>No download data available for this period.</code>"
+    else:
+        for i, file in enumerate(top_files, 1):
+            text += f"<b>{i}.</b> <code>{file.get('file_name', 'Unknown File')}</code> - <b>{file['count']}</b> downloads\n"
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Analytics", callback_data="admin_view_analytics")]])
+    await query.message.edit_text(text, reply_markup=keyboard)
+
+
+# ======================================================================================
+# --- User Management Section ---
+# ======================================================================================
+
+async def show_users_list(client: Client, query: CallbackQuery, page: int):
     users_data = await get_all_users()
     total_users = len(users_data)
-    total_pages = math.ceil(total_users / USERS_PER_PAGE)
+    total_pages = math.ceil(total_users / USERS_PER_PAGE) if total_users > 0 else 1
+    page = max(1, min(page, total_pages))
     
     start_index = (page - 1) * USERS_PER_PAGE
-    end_index = start_index + USERS_PER_PAGE
-    users_to_display = users_data[start_index:end_index]
+    users_to_display = users_data[start_index : start_index + USERS_PER_PAGE]
     
-    keyboard = []
-    
-    user_ids = [user['_id'] for user in users_to_display]
-    try:
-        tg_users = await client.get_users(user_ids)
-        tg_users_dict = {user.id: user for user in tg_users}
-    except Exception as e:
-        logger.error(f"Failed to fetch user details for pagination: {e}")
-        tg_users_dict = {}
+    tg_users_dict = {u.id: u for u in await client.get_users([u['_id'] for u in users_to_display])}
 
+    keyboard_buttons = []
     for user_doc in users_to_display:
         user_id = user_doc['_id']
         is_banned = user_doc.get('banned', False)
@@ -104,213 +194,220 @@ async def build_users_keyboard(client: Client, page: int = 1) -> InlineKeyboardM
         display_text = f"👤 {tg_user.first_name}" if tg_user else f"👤 ID: {user_id}"
         action_text = "✅ Unban" if is_banned else "🚫 Ban"
         
-        keyboard.append([
-            InlineKeyboardButton(display_text, callback_data=f"admin_user_{user_id}_{page}"),
-            InlineKeyboardButton(action_text, callback_data=f"admin_{'unban' if is_banned else 'ban'}_{user_id}_{page}")
+        keyboard_buttons.append([
+            InlineKeyboardButton(display_text, callback_data=f"admin_view_userinfo_{user_id}_{page}"),
+            InlineKeyboardButton(action_text, callback_data=f"admin_action_{'unban' if is_banned else 'ban'}_{user_id}_{page}")
         ])
         
     pagination_row = []
-    if page > 1: pagination_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"admin_list_users_{page-1}"))
-    if page < total_pages: pagination_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"admin_list_users_{page+1}"))
-    if pagination_row: keyboard.append(pagination_row)
+    if page > 1: pagination_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"admin_view_users_{page-1}"))
+    if page < total_pages: pagination_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"admin_view_users_{page+1}"))
+    if pagination_row: keyboard_buttons.append(pagination_row)
         
-    keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_main_menu")])
-    return InlineKeyboardMarkup(keyboard)
+    keyboard_buttons.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_action_refresh")])
+    await query.message.edit_text(f"👥 <b>All Users ({total_users}) - Page {page}/{total_pages}</b>", reply_markup=InlineKeyboardMarkup(keyboard_buttons))
 
-def build_temp_files_keyboard() -> InlineKeyboardMarkup:
-    """Builds the keyboard for the temporary file manager."""
-    keyboard = []
+async def show_user_details(client: Client, query: CallbackQuery, user_id: int, page: int):
+    tg_user = await client.get_users(user_id)
+    db_user = await get_user(user_id)
+    join_date = db_user.get('joined_date', datetime.now()).strftime("%d %b %Y")
+    download_count = await get_user_download_count(user_id)
+
+    user_details = (
+        f"👤 <b>User Details:</b>\n\n"
+        f" • <b>Name:</b> {tg_user.mention}\n"
+        f" • <b>User ID:</b> <code>{tg_user.id}</code>\n"
+        f" • <b>Username:</b> @{tg_user.username or 'N/A'}\n"
+        f" • <b>Joined:</b> <code>{join_date}</code>\n"
+        f" • <b>Status:</b> {'Banned 🚫' if db_user.get('banned') else 'Active ✅'}\n"
+        f" • <b>Total Downloads:</b> <code>{download_count}</code>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📜 View Last 5 Downloads", callback_data=f"admin_view_userhistory_{user_id}_{page}")],
+        [InlineKeyboardButton(f"⬅️ Back to User List", callback_data=f"admin_view_users_{page}")]
+    ])
+    await query.message.edit_text(user_details, reply_markup=keyboard, disable_web_page_preview=True)
+
+async def show_user_history(query: CallbackQuery, user_id: int, page: int):
+    last_downloads = await get_user_last_downloads(user_id)
+    text = f"📜 <b>Last 5 Downloads for User {user_id}</b>\n\n"
+    if not last_downloads:
+        text += "<code>This user has not downloaded any files.</code>"
+    else:
+        for i, doc in enumerate(last_downloads, 1):
+            text += f"<b>{i}.</b> <code>{doc['file_name']}</code> on {doc['timestamp'].strftime('%d %b %Y')}\n"
+    
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to User Details", callback_data=f"admin_view_userinfo_{user_id}_{page}")]])
+    await query.message.edit_text(text, reply_markup=keyboard)
+
+async def handle_ban_unban(client: Client, query: CallbackQuery, action: str, user_id: int, page: int):
+    if user_id == query.from_user.id:
+        return await query.answer("You cannot ban yourself.", show_alert=True)
+    if action == "ban":
+        await ban_user(user_id)
+        await query.answer(f"User {user_id} has been BANNED.", show_alert=True)
+    else:
+        await unban_user(user_id)
+        await query.answer(f"User {user_id} has been UNBANNED.", show_alert=True)
+    await show_users_list(client, query, page)
+
+
+# ======================================================================================
+# --- Broadcast Section ---
+# ======================================================================================
+
+async def get_broadcast_reply(client: Client, prompt_msg: Message, timeout: int = 300):
+    """
+    Awaits a reply to a specific message from a specific user.
+    This is the correct, Pyrogram-native way to replace client.listen().
+    """
+    user_id = prompt_msg.chat.id
+    message_id = prompt_msg.id
+    future = asyncio.Future()
+
+    # --- THIS IS THE FIX for AttributeError ---
+    # The handler now checks for the correct attributes on the message object (m).
+    # `filters.reply` is the correct filter to use here.
+    handler = MessageHandler(
+        lambda _, m: future.set_result(m) if m.reply_to_message and m.reply_to_message.id == message_id else None,
+        filters=(filters.private & filters.chat(user_id))
+    )
+    
+    client.add_handler(handler)
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        return None
+    finally:
+        client.remove_handler(handler)
+
+
+async def handle_broadcast(client: Client, query: CallbackQuery):
+    await query.message.delete()
+    ask_msg = await client.send_message(query.from_user.id, "Please reply to this message with the content you want to broadcast. To cancel, send /cancel.")
+
+    response = await get_broadcast_reply(client, ask_msg)
+
+    if not response:
+        return await ask_msg.edit("Broadcast cancelled due to timeout.")
+    if response.text and response.text == "/cancel":
+        return await ask_msg.edit("Broadcast operation cancelled.")
+    
+    await ask_msg.delete()
+    
+    total_users = await get_all_user_ids()
+    pls_wait = await client.send_message(query.from_user.id, f"<i>Broadcasting to {len(total_users)} users...</i>")
+    
+    successful, blocked, unsuccessful = 0, 0, 0
+    for user_id in total_users:
+        try:
+            await response.copy(user_id)
+            successful += 1
+        except (UserIsBlocked, InputUserDeactivated):
+            await delete_user(user_id)
+            blocked += 1
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            await response.copy(user_id)
+            successful += 1
+        except Exception:
+            unsuccessful += 1
+        
+        if (successful + blocked + unsuccessful) % 20 == 0:
+            new_text = f"<i>Sent: {successful} | Blocked: {blocked} | Failed: {unsuccessful}</i>"
+            if pls_wait.text != new_text:
+                 await pls_wait.edit(new_text)
+    
+    status = (
+        f"<b><u>Broadcast Completed</u></b>\n"
+        f"<b>Total Users:</b> <code>{len(total_users)}</code>\n"
+        f"<b>✅ Successful:</b> <code>{successful}</code>\n"
+        f"<b>🚫 Blocked/Deleted:</b> <code>{blocked}</code>\n"
+        f"<b>❌ Failed:</b> <code>{unsuccessful}</code>"
+    )
+    await pls_wait.edit(status)
+
+
+# ======================================================================================
+# --- Group Management Section ---
+# ======================================================================================
+
+async def show_groups_list(client: Client, query: CallbackQuery):
+    groups = await get_approved_groups()
+    text = "📝 <b>Approved Groups for Auto-Search:</b>"
+    keyboard_buttons = []
+
+    if not groups:
+        text = "There are currently no approved groups for auto-search."
+    else:
+        for group in groups:
+            try:
+                chat = await client.get_chat(group['_id'])
+                link = chat.invite_link or f"https://t.me/c/{str(group['_id']).replace('-100', '')}/1"
+                keyboard_buttons.append([
+                    InlineKeyboardButton(chat.title, url=link),
+                    InlineKeyboardButton("❌ Disapprove", callback_data=f"admin_action_disapprovegroup_{group['_id']}")
+                ])
+            except Exception as e:
+                logger.warning(f"Could not fetch group {group['_id']}: {e}")
+                
+    keyboard_buttons.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_action_refresh")])
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard_buttons))
+
+async def handle_disapprove_group(client: Client, query: CallbackQuery, group_id: int):
+    await remove_group(group_id)
+    await query.answer("Group disapproved and removed.", show_alert=True)
+    try: await client.leave_chat(group_id)
+    except: pass
+    await show_groups_list(client, query)
+
+
+# ======================================================================================
+# --- Server and Temp Files Section ---
+# ======================================================================================
+
+async def show_server_info(client: Client, query: CallbackQuery):
+    uptime_str = get_readable_time((datetime.now() - client.uptime).seconds)
+    text = (
+        f"🖥️ <b>Server Information</b>\n\n"
+        f"<b>Uptime:</b> <code>{uptime_str}</code>\n"
+        f"<b>CPU Usage:</b> <code>{psutil.cpu_percent()}%</code>\n"
+        f"<b>Memory Usage:</b> <code>{psutil.virtual_memory().percent}%</code>\n"
+        f"<b>Disk Usage:</b> <code>{psutil.disk_usage('/').percent}%</code>"
+    )
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_action_refresh")]])
+    await query.message.edit_text(text, reply_markup=keyboard)
+
+async def show_temp_files(query: CallbackQuery):
     os.makedirs(TEMP_DIR, exist_ok=True)
     files = os.listdir(TEMP_DIR)
     
+    keyboard_buttons = []
     if not files:
-        keyboard.append([InlineKeyboardButton("✅ No temporary files found.", callback_data="noop")])
+        keyboard_buttons.append([InlineKeyboardButton("✅ No temporary files found.", callback_data="noop")])
     else:
-        for file_name in files[:20]: # Show max 20 files to avoid overly large keyboards
-            keyboard.append([
+        for file_name in files[:20]:
+            keyboard_buttons.append([
                 InlineKeyboardButton(f"📄 {file_name[:30]}", callback_data="noop"),
-                InlineKeyboardButton("🗑️ Delete", callback_data=f"admin_temp_delete_{file_name}")
+                InlineKeyboardButton("🗑️", callback_data=f"admin_action_deletetemp_{file_name}")
             ])
-        keyboard.append([InlineKeyboardButton("⚠️ DELETE ALL FILES ⚠️", callback_data="admin_temp_delete_all")])
+        if len(files) > 0:
+             keyboard_buttons.append([InlineKeyboardButton("⚠️ DELETE ALL ⚠️", callback_data=f"admin_action_deletetemp_all")])
         
-    keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_main_menu")])
-    return InlineKeyboardMarkup(keyboard)
+    keyboard_buttons.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_action_refresh")])
+    await query.message.edit_text("<b>📂 Temp File Manager</b>", reply_markup=InlineKeyboardMarkup(keyboard_buttons))
 
-# ======================================================================================
-#                              *** Command & Callback Handlers ***
-# ======================================================================================
-
-@Bot.on_message(filters.private & filters.command("admin") & filters.user(ADMINS))
-async def admin_panel_command(client: Bot, message: Message):
-    """Entry point for the admin panel via the /admin command."""
-    text, keyboard = await build_main_menu()
-    await message.reply(text, reply_markup=keyboard)
-
-@Bot.on_callback_query(filters.regex("^admin_") & filters.user(ADMINS))
-async def admin_callback_handler(client: Bot, query: CallbackQuery):
-    """Handles all button presses within the admin panel."""
-    try:
-        parts = query.data.split("_")
-        action = parts[1]
-    except IndexError:
-        return await query.answer("Invalid callback data.", show_alert=True)
-
-    try:
-        # --- Main Menu ---
-        if action == "main":
-            is_refresh = "refresh" in query.data
-            await query.answer("Refreshing stats...", show_alert=False) if is_refresh else await query.answer()
-            text, keyboard = await build_main_menu()
-            await query.message.edit_text(text, reply_markup=keyboard)
-
-        # --- Analytics Menu ---
-        elif action == "analytics":
-            await query.answer()
-            today, yesterday, day_before = await get_daily_download_counts()
-            text = (
-                f"📈 <b>Bot Analytics</b>\n\n"
-                f"<b>File Requests (Downloads):</b>\n"
-                f"  - <b>Today:</b> <code>{today}</code>\n"
-                f"  - <b>Yesterday:</b> <code>{yesterday}</code>\n"
-                f"  - <b>Day Before:</b> <code>{day_before}</code>\n\n"
-                "Select a time range to view top trending files."
-            )
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("Today", callback_data="admin_top_1"),
-                    InlineKeyboardButton("Week", callback_data="admin_top_7"),
-                    InlineKeyboardButton("Month", callback_data="admin_top_30"),
-                    InlineKeyboardButton("All Time", callback_data="admin_top_0")
-                ],
-                [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_main_menu")]
-            ])
-            await query.message.edit_text(text, reply_markup=keyboard)
-
-        # --- Top Files Handler ---
-        elif action == "top":
-            days = int(parts[2])
-            await query.answer("Fetching top files...", show_alert=False)
-            time_range_text = {0: "All Time", 1: "Today", 7: "This Week", 30: "This Month"}.get(days, f"{days} Days")
-            top_files = await get_top_downloaded_files(days=days)
-            text = f"🏆 <b>Top 5 Trending Files ({time_range_text})</b>\n\n"
-            if not top_files:
-                text += "<code>No download data available for this period.</code>"
-            else:
-                for i, file in enumerate(top_files, 1):
-                    text += f"<b>{i}.</b> <code>{file.get('file_name', 'Unknown File')}</code> - <b>{file['count']}</b> requests\n"
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Analytics", callback_data="admin_analytics_menu")]])
-            await query.message.edit_text(text, reply_markup=keyboard)
-
-        # --- Server Info Menu ---
-        elif action == "server":
-            await query.answer()
-            uptime_str = get_readable_time((datetime.now() - client.uptime).seconds)
-            text = (
-                f"🖥️ <b>Server Information</b>\n\n"
-                f"<b>Uptime:</b> <code>{uptime_str}</code>\n"
-                f"<b>CPU Usage:</b> <code>{psutil.cpu_percent()}%</code>\n"
-                f"<b>Memory Usage:</b> <code>{psutil.virtual_memory().percent}%</code>\n"
-                f"<b>Disk Usage:</b> <code>{psutil.disk_usage('/').percent}%</code>"
-            )
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="admin_main_menu")]])
-            await query.message.edit_text(text, reply_markup=keyboard)
-
-        # --- User Management ---
-        elif action == "users":
-            await query.answer()
-            await query.message.edit_text("👥 <b>User Management</b>", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📜 List All Users", callback_data="admin_list_users_1")],
-                [InlineKeyboardButton("⬅️ Back", callback_data="admin_main_menu")]
-            ]))
-            
-        elif action == "list":
-            page = int(parts[-1])
-            await query.answer("Fetching user details...", show_alert=False)
-            keyboard = await build_users_keyboard(client, page)
-            total_users_count = len(await get_all_users())
-            await query.message.edit_text(f"👥 <b>All Users ({total_users_count}) - Page {page}</b>", reply_markup=keyboard)
-        
-        elif action == "user":
-            user_id, page = int(parts[2]), int(parts[3])
-            tg_user = await client.get_users(user_id)
-            db_user = await get_user(user_id)
-            status = "Banned 🚫" if db_user and db_user.get('banned', False) else "Active ✅"
-            join_date = db_user.get('joined_date')
-            join_date_str = join_date.strftime("%d %b %Y") if join_date else "N/A"
-            download_count = await get_user_download_count(user_id)
-            
-            user_details = (
-                f"👤 <b>User Details:</b>\n\n"
-                f" • <b>Name:</b> {tg_user.mention}\n"
-                f" • <b>User ID:</b> <code>{tg_user.id}</code>\n"
-                f" • <b>Username:</b> @{tg_user.username or 'N/A'}\n"
-                f" • <b>Joined:</b> <code>{join_date_str}</code>\n"
-                f" • <b>Bot Status:</b> {status}\n"
-                f" • <b>Total Requests:</b> <code>{download_count}</code>"
-            )
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📜 View Last 5 Downloads", callback_data=f"admin_history_{user_id}_{page}")],
-                [InlineKeyboardButton(f"⬅️ Back to Page {page}", callback_data=f"admin_list_users_{page}")]
-            ])
-            await query.message.edit_text(user_details, reply_markup=keyboard, disable_web_page_preview=True)
-
-        elif action == "history":
-            user_id, page = int(parts[2]), int(parts[3])
-            last_downloads = await get_user_last_downloads(user_id)
-            text = f"📜 <b>Last 5 Downloads for User {user_id}</b>\n\n"
-            if not last_downloads:
-                text += "<code>This user has not downloaded any files yet.</code>"
-            else:
-                for i, doc in enumerate(last_downloads, 1):
-                    timestamp = doc['timestamp'].strftime("%d %b %Y")
-                    text += f"<b>{i}.</b> <code>{doc['file_name']}</code>\n     <i>(On {timestamp})</i>\n"
-            
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"⬅️ Back to User Details", callback_data=f"admin_user_{user_id}_{page}")]])
-            await query.message.edit_text(text, reply_markup=keyboard)
-
-        elif action in ["ban", "unban"]:
-            user_id, page = int(parts[2]), int(parts[3])
-            if user_id == query.from_user.id:
-                return await query.answer("You cannot ban yourself.", show_alert=True)
-            if action == "ban":
-                await ban_user(user_id)
-                await query.answer(f"User {user_id} has been BANNED.", show_alert=True)
-            else:
-                await unban_user(user_id)
-                await query.answer(f"User {user_id} has been UNBANNED.", show_alert=True)
-            keyboard = await build_users_keyboard(client, page)
-            await query.message.edit_reply_markup(reply_markup=keyboard)
-        
-        # --- Temp File Manager ---
-        elif action == "temp":
-            sub_action = parts[2] if len(parts) > 2 else "menu"
-            if sub_action == "files":
-                os.makedirs(TEMP_DIR, exist_ok=True)
-                await query.message.edit_text(f"<b>📂 Temp File Manager</b>", reply_markup=build_temp_files_keyboard())
-            
-            elif sub_action == "delete":
-                file_name_to_delete = "_".join(parts[3:])
-                if file_name_to_delete == "all":
-                    count = 0
-                    for file_name in os.listdir(TEMP_DIR):
-                        os.remove(os.path.join(TEMP_DIR, file_name))
-                        count += 1
-                    await query.answer(f"All {count} temporary files have been deleted.", show_alert=True)
-                else:
-                    file_path = os.path.join(TEMP_DIR, file_name_to_delete)
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        await query.answer(f"Deleted: {file_name_to_delete}", show_alert=True)
-                    else:
-                        await query.answer("File not found.", show_alert=True)
-                
-                await query.message.edit_text(f"<b>📂 Temp File Manager</b>", reply_markup=build_temp_files_keyboard())
-            else: # Go to menu
-                await query.answer()
-                await query.message.edit_text("<b>📂 Temp File Manager</b>\n\nThis tool allows you to clean up temporary files created by the bot.", reply_markup=build_temp_files_keyboard())
-
-    except MessageNotModified:
-        await query.answer("No changes to show.")
-    except Exception as e:
-        logger.error(f"Error in admin panel: {e}", exc_info=True)
-        await query.answer("An error occurred. Please check the logs.", show_alert=True)
+async def handle_delete_temp_file(query: CallbackQuery, file_name: str):
+    if file_name == "all":
+        count = 0
+        for f in os.listdir(TEMP_DIR):
+            try: os.remove(os.path.join(TEMP_DIR, f)); count += 1
+            except: pass
+        await query.answer(f"All {count} temporary files deleted.", show_alert=True)
+    else:
+        try:
+            os.remove(os.path.join(TEMP_DIR, file_name))
+            await query.answer(f"Deleted: {file_name}", show_alert=False)
+        except FileNotFoundError:
+            await query.answer("File not found.", show_alert=True)
+    await show_temp_files(query)

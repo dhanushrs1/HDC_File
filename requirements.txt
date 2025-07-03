@@ -11,3 +11,4 @@ aiohttp
 opencv-python
 ffmpeg-python
 psutil
+python-telegram-bot

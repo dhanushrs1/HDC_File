@@ -84,9 +84,9 @@ REDIRECT_URL = get_env_var("REDIRECT_URL", required=True)
 # ======================================================================================
 
 # --- User-Facing Messages ---
-START_MSG = get_env_var("START_MESSAGE", default="👋 Hello {first}!\n\nI am the <b>HD Cinema File Bot</b>. I can store your files securely and generate permanent, shareable links. This service is for authorized admins only.")
+START_MSG = get_env_var("START_MESSAGE", default="\n\nI am the <b>HD Cinema File Bot</b>. I can store your files securely and generate permanent, shareable links. This service is for authorized admins only.")
 START_PIC = get_env_var("START_PIC", default="") # URL for a start image
-CUSTOM_CAPTION = get_env_var("CUSTOM_CAPTION", default=None) # Custom caption for files
+CUSTOM_CAPTION = get_env_var("CUSTOM_CAPTION", default="{filename} Thank you for using our bot") # Custom caption for files
 GROUP_SEARCH_PIC = get_env_var("GROUP_SEARCH_PIC", default="") # URL for the image sent with group search results
 
 # --- Security & Access Control ---
@@ -104,7 +104,7 @@ SESSION_TIMEOUT = get_env_var("SESSION_TIMEOUT", default=1800, is_int=True) # In
 SCREENSHOT_WATERMARK = get_env_var("SCREENSHOT_WATERMARK", default="HD Cinema") # Add a watermark to screenshots
 
 # --- Smart File Expiry ---
-AUTO_DELETE_TIME = get_env_var("AUTO_DELETE_TIME", default=600, is_int=True) # In seconds (10 minutes)
+AUTO_DELETE_TIME = get_env_var("AUTO_DELETE_TIME", default=3000, is_int=True) # In seconds (10 minutes)
 EXPIRED_MSG = get_env_var("EXPIRED_MSG", default="⏳ <b>This file has expired.</b>\n\nYou can request it again within the next {hours} hours.")
 RE_REQUEST_EXPIRY_HOURS = get_env_var("RE_REQUEST_EXPIRY_HOURS", default=24, is_int=True)
 FINAL_EXPIRED_MSG = get_env_var("FINAL_EXPIRED_MSG", default="🚫 <b>This re-request link has also expired.</b>")

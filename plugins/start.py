@@ -1,11 +1,11 @@
 """
 (©) HD Cinema Bot
 
-This plugin handles the /start command and other essential user commands.
-- Processes deep links to serve files.
-- Displays a welcome message with a role-based UI.
+This plugin handles the /start command with a robust security model.
+- FIX: Banned users are now correctly blocked from all bot functions.
+- Processes deep links to serve files only to authorized users.
 - Manages the force subscription feature.
-- Includes admin commands for user management and broadcasting.
+- Displays a role-based welcome message.
 """
 
 import asyncio
@@ -24,8 +24,9 @@ from config import (
     FORCE_SUB_CHANNEL
 )
 from helper_func import subscribed, decode, get_messages, handle_file_expiry, get_readable_time
-from database.database import add_user, delete_user, get_all_user_ids, is_user_present, log_file_download, search_files
-from plugins.search import send_search_results # Import the function from search plugin
+# --- FIX: Import get_user in addition to other functions ---
+from database.database import add_user, get_user, delete_user, get_all_user_ids, log_file_download, search_files
+from plugins.search import send_search_results
 
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
@@ -39,56 +40,57 @@ QUOTES = [
     "Push yourself, because no one else is going to do it for you."
 ]
 
+
 # ======================================================================================
-#                              *** Core /start Logic ***
+#                              *** Core /start Logic with Security Fix ***
 # ======================================================================================
 
 @Bot.on_message(filters.command('start') & filters.private)
 async def start_command(client: Bot, message: Message):
     """
-    Handles the /start command. It can now process three types of payloads:
-    1. A file/batch link (`get-...`).
-    2. A search link from a group (`search_...`).
-    3. No payload (a regular /start).
-    This handler also includes the force-subscribe logic to prevent conflicts.
+    Handles the /start command with a strict ban check.
+    1. Checks if the user is banned.
+    2. Checks for force subscription.
+    3. Processes deep links or shows the welcome menu.
     """
-    # --- 1. Check Force Subscription ---
+    user = message.from_user
+    
+    # --- 1. CRITICAL SECURITY FIX: Check for ban first ---
+    db_user = await get_user(user.id)
+    if db_user and db_user.get("banned", False):
+        await message.reply_text(
+            "<b>Access Denied</b> ❌\n\nYou are banned from using this bot. Please contact the admin if you believe this is a mistake."
+        )
+        return
+
+    # --- 2. If not banned, check force subscription ---
     if not await subscribed(client, message):
         return await force_sub_handler(client, message)
 
-    # --- 2. If subscribed, proceed with main logic ---
-    user_id = message.from_user.id
-    
-    if not await is_user_present(user_id):
-        await add_user(user_id)
-        logger.info(f"New user added: {user_id}")
+    # --- 3. If not banned and subscribed, add the user if they are new ---
+    if not db_user:
+        await add_user(user.id)
+        logger.info(f"New user added: {user.id}")
 
-    # --- 3. Check for deep link payload ---
+    # --- 4. Process deep link or show welcome message ---
     if len(message.command) > 1:
         payload = message.command[1]
 
-        # --- Handle Search Payload ---
+        # Handle Search Payload from a group deep link
         if payload.startswith("search_"):
             query = unquote_plus(payload.split("_", 1)[1])
             results = await search_files(query, limit=50)
             
-            # --- De-duplication Logic ---
-            unique_results = []
-            seen_filenames = set()
-            for doc in results:
-                filename = doc.get('file_name')
-                if filename and filename not in seen_filenames:
-                    unique_results.append(doc)
-                    seen_filenames.add(filename)
-            # --- End De-duplication ---
+            # De-duplication Logic
+            unique_results = [doc for i, doc in enumerate(results) if doc.get('file_name') not in {d.get('file_name') for d in results[:i]}]
 
             if unique_results:
                 await send_search_results(message, query, unique_results, page=1)
             else:
-                await message.reply_text(f"❌ No results found for '{query}'.")
+                await message.reply_text(f"❌ No results found for '<code>{query}</code>'.")
             return
 
-        # --- Handle File/Batch Payload ---
+        # Handle File/Batch Payload
         else:
             try:
                 string = await decode(payload)
@@ -100,16 +102,15 @@ async def start_command(client: Bot, message: Message):
                 elif len(args) == 2: # Single file link
                     ids = [int(int(args[1]) / abs(client.db_channel.id))]
                 else:
-                    await send_welcome_message(client, message)
-                    return
+                    return await send_welcome_message(client, message)
 
                 await process_file_request(client, message, ids)
             except Exception as e:
-                logger.error(f"Error processing deep link for user {user_id}: {e}")
+                logger.error(f"Error processing deep link for user {user.id}: {e}")
                 await message.reply_text("<b>Error:</b> The link seems to be invalid or expired.")
             return
 
-    # --- 4. No Payload: Show Welcome Message ---
+    # --- 5. No Payload: Show Welcome Message ---
     await send_welcome_message(client, message)
 
 
@@ -118,9 +119,8 @@ async def send_welcome_message(client: Bot, message: Message):
     user = message.from_user
     
     keyboard = [
-        [InlineKeyboardButton("🎬 Request Content", callback_data="request_info")],
         [
-            InlineKeyboardButton("❓ Help & About", callback_data="help_info"),
+            InlineKeyboardButton("⚠️ Disclaimer", callback_data="help_info"),
             InlineKeyboardButton("📊 My Stats", callback_data="my_stats")
         ],
         [
@@ -145,6 +145,7 @@ async def send_welcome_message(client: Bot, message: Message):
     else:
         await message.reply_text(text=start_text, reply_markup=reply_markup, disable_web_page_preview=True, quote=True)
 
+
 # ======================================================================================
 #                              *** File Serving Logic ***
 # ======================================================================================
@@ -158,8 +159,7 @@ async def process_file_request(client: Bot, message: Message, ids: list):
         messages = await get_messages(client, ids)
     except Exception as e:
         logger.error(f"Could not get messages for user {user_id}. Error: {e}")
-        await temp_msg.edit("Something went wrong while fetching the files!")
-        return
+        return await temp_msg.edit("Something went wrong while fetching the files!")
         
     await temp_msg.delete()
 
