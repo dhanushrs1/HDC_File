@@ -19,9 +19,9 @@ import config
 # --- Unique Startup Banner ---
 ASCII_ART = """
 ╔══════════════════════════════════════════════════════════╗
-║        🎬 HD CINEMA BOT - FileShareX 🎬                ║
-║  Your Ultimate Telegram File & Movie Indexing Partner   ║
-║  Fast • Secure • Reliable • Powered by Pyrogram+MongoDB ║
+║        🎬 HD CINEMA BOT - FileShareX 🎬                 ║
+║  Your Ultimate Telegram File & Movie Indexing Partner    ║
+║  Fast • Secure • Reliable • Powered by Pyrogram+MongoDB  ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
