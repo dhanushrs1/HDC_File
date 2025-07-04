@@ -86,7 +86,10 @@ REDIRECT_URL = get_env_var("REDIRECT_URL", required=True)
 # --- User-Facing Messages ---
 START_MSG = get_env_var("START_MESSAGE", default="I am the <b>HD Cinema File Bot</b>. I can store your files securely and generate permanent, shareable links. This service is for authorized admins only.")
 START_PIC = get_env_var("START_PIC", default="") # URL for a start image
-CUSTOM_CAPTION = get_env_var("CUSTOM_CAPTION", default="{filename} Thank you for using our bot") # Custom caption for files
+CUSTOM_CAPTION = get_env_var(
+    "CUSTOM_CAPTION",
+    default="🎬 <b>{filename}</b>\n\nEnjoy your file from <b>HD Cinema Bot</b>!\n\nShare the link, stay tuned for more movies & files."
+) # Custom caption for files
 GROUP_SEARCH_PIC = get_env_var("GROUP_SEARCH_PIC", default="") # URL for the image sent with group search results
 
 # --- Security & Access Control ---
