@@ -289,11 +289,17 @@ async def get_broadcast_reply(client: Client, prompt_msg: Message, timeout: int 
     message_id = prompt_msg.id
     future = asyncio.Future()
 
-    # --- THIS IS THE FIX for AttributeError ---
-    # The handler now checks for the correct attributes on the message object (m).
-    # `filters.reply` is the correct filter to use here.
+    def handler_func(_, m):
+        # Only set result if future is not already done
+        if (
+            not future.done()
+            and m.reply_to_message
+            and m.reply_to_message.id == message_id
+        ):
+            future.set_result(m)
+
     handler = MessageHandler(
-        lambda _, m: future.set_result(m) if m.reply_to_message and m.reply_to_message.id == message_id else None,
+        handler_func,
         filters=(filters.private & filters.chat(user_id))
     )
     
